@@ -47,6 +47,8 @@ flowchart LR
 
 Latest使用GitHub的`legacy`版本判定，避免旧版构建晚完成时强制替换新版。草稿通过带身份验证的分页Release列表恢复，参见 [GitHub Release API](https://docs.github.com/en/rest/releases/releases)。push和PR使用不同并发组，避免相互取消。
 
+失败时可在Actions使用“Re-run failed jobs”恢复。需要重新构建时使用“Re-run all jobs”；上传步骤允许替换本次运行中同名的临时Actions产物，正式Release仍保持不可覆盖。
+
 首次仓库流程安装使用一次性的 `release/ci-setup`，同样经过master PR与Windows打包验证，但不创建应用版本tag或正式Release。它用于把CI本身安装到默认分支，不能替代版本化发布。
 
 ## 本地验证CI逻辑
