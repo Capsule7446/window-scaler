@@ -1,0 +1,110 @@
+name: Release CI
+
+on:
+  push:
+    branches: [master, 'release/**']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ci-${{ github.event_name }}-${{ github.ref == 'refs/heads/master' && github.sha || github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test publication rules
+        run: node --test ci/*.test.mjs
+      - id: plan
+        name: Determine candidate or official release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node ci/policy.mjs plan
+
+  windows-build:
+    name: Windows build, test and package
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_HOME: ${{ github.workspace }}/.ci-cargo
+      RUSTFLAGS: -C target-feature=+crt-static
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .ci-cargo/registry
+            .ci-cargo/git
+            target
+          key: windows-msvc-static-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+          restore-keys: windows-msvc-static-
+      - name: Install the pinned Rust toolchain
+        run: |
+          $toolchain = (Select-String -LiteralPath rust-toolchain.toml -Pattern '^channel\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Format, static analysis, tests and optimized build
+        run: |
+          foreach ($mode in @('fmt', 'clippy', 'test-release', 'release')) {
+            & ./build.ps1 -Mode $mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & ./ci/package.ps1 -Version $env:RELEASE_VERSION
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x86_64-${{ github.sha }}
+          path: |
+            artifacts/WindowScaler.exe
+            artifacts/WindowScaler-*.zip
+            artifacts/SHA256SUMS.txt
+            artifacts/build-info.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish official GitHub Release
+    needs: [plan, windows-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x86_64-${{ github.sha }}
+          path: artifacts
+      - name: Verify checksums and publish all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: node ci/publish.mjs
