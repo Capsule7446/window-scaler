@@ -84,6 +84,7 @@ jobs:
             artifacts/SHA256SUMS.txt
             artifacts/build-info.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
           compression-level: 0
 
