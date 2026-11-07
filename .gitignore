@@ -3,6 +3,8 @@
 /test-output/
 /outputs/
 /.scratch/
+/artifacts/
+/.ci-cargo/
 
 # Native build artifacts and diagnostic files
 *.obj

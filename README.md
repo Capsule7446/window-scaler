@@ -36,5 +36,8 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 - 代码仓库：[Capsule7446/window-scaler](https://github.com/Capsule7446/window-scaler)
 - Ticket跟踪：[GitHub Issues](https://github.com/Capsule7446/window-scaler/issues)
 - [已确认规格](docs/spec.md) · [验证记录](docs/validation.md) · [任务跟踪规则](docs/agents/issue-tracker.md)
+- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。当前大功能为 [Epic #5](https://github.com/Capsule7446/window-scaler/issues/5)。
+
+`release/vX.Y.Z`会自动测试打包，合入master后由GitHub Actions自动打tag并发布ZIP、EXE和校验文件；正式包见 [GitHub Releases](https://github.com/Capsule7446/window-scaler/releases)。
 
 目前已通过8项测试和Release构建；[托盘完整流程 #3](https://github.com/Capsule7446/window-scaler/issues/3)与[正式版及实机兼容验收 #4](https://github.com/Capsule7446/window-scaler/issues/4)保持打开。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。

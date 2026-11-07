@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('check','test','build','release','clippy','fmt')]
+    [ValidateSet('check','test','test-release','build','release','clippy','fmt')]
     [string]$Mode = 'release'
 )
 $ErrorActionPreference = 'Stop'
@@ -29,6 +29,7 @@ if (Test-Path -LiteralPath $nativeCmake) { $env:Path = "$nativeCmake;$env:Path" 
 $cargoArgs = switch ($Mode) {
     'check' { @('check','--locked') }
     'test' { @('test','--locked','--','--test-threads=1') }
+    'test-release' { @('test','--release','--locked','--','--test-threads=1') }
     'build' { @('build','--locked') }
     'release' { @('build','--release','--locked') }
     'clippy' { @('clippy','--locked','--all-targets','--','-D','warnings') }

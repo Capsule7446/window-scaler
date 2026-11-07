@@ -23,6 +23,15 @@ GitHub 不可用时可保留临时草稿，恢复后同步并以 GitHub 状态�
 
 每个任务使用一个当前分诊标签。标签表示分诊结果；任务是否完成使用 GitHub 的 open/closed 状态表示。
 
+## 类型与父子任务
+
+- 大功能使用 `epic` 标签；小功能使用 `feature`，并通过GitHub原生sub-issue关系归属于一个Epic。
+- 修复使用 `hotfix`；打包、正式发布和版本验收使用 `release`。类型标签与分诊标签分别维护。
+- Epic的多个Feature分别建立开发分支，完成后合回对应Epic；具体分支名和合并方向见 [分支与发布流程](../branching.md)。
+- 当前大功能为 [Epic #5](https://github.com/Capsule7446/window-scaler/issues/5)，版本发布验收为 [Release #4](https://github.com/Capsule7446/window-scaler/issues/4)。
+
+使用API建立父子关系时，`sub_issue_id`传Issue数据库ID，路径中的父任务使用Issue编号；修改后读取sub-issues列表确认关联。
+
 ## CLI 示例
 
 ```powershell

@@ -1,0 +1,25 @@
+name: Epic 大功能
+description: 建立由多个Feature组成的大功能
+title: "[Epic] "
+labels: [epic, needs-triage]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: 目标与范围
+    validations:
+      required: true
+  - type: textarea
+    id: features
+    attributes:
+      label: Feature拆分
+      description: 列出独立小功能，创建对应Issue后使用原生子任务关系关联。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 集成验收
+      value: "- [ ] "
+    validations:
+      required: true
