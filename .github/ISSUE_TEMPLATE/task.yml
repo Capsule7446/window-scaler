@@ -1,0 +1,30 @@
+name: 任务
+description: 提交一个可以独立验收的功能、修复或验证任务
+title: "[任务] "
+labels: [needs-triage]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标与触发场景
+      description: 描述具体场景及期望结果；修复任务请补充当前表现。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与关联资料
+      description: 相关规格、文件、依赖任务或复现步骤。
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收条件
+      description: 使用勾选清单写出可观察的完成条件。
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 验证证据
+      description: 已执行检查、结果与尚未覆盖条件；新建任务时可以留空。

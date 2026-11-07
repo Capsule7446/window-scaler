@@ -1,0 +1,388 @@
+use crate::model::{Size, WindowId, WindowInfo, scaled_size};
+use std::{
+    collections::HashSet,
+    ffi::c_void,
+    mem::size_of,
+    ptr::null_mut,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, HWND, LPARAM, RECT},
+    Graphics::{
+        Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
+    },
+    System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    },
+    UI::{
+        HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
+        WindowsAndMessaging::*,
+    },
+};
+
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain([0]).collect()
+}
+fn hwnd(id: WindowId) -> HWND {
+    id.hwnd as HWND
+}
+fn error(context: &str) -> String {
+    format!("{context}：{}", std::io::Error::last_os_error())
+}
+
+pub struct DpiGuard(*mut c_void);
+impl DpiGuard {
+    pub fn new() -> Self {
+        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
+    }
+}
+impl Drop for DpiGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                SetThreadDpiAwarenessContext(self.0);
+            }
+        }
+    }
+}
+
+/// A private property is removed by Windows when its HWND is destroyed. Unlike
+/// HWND + PID alone, the cookie cannot accidentally identify a reused window.
+pub struct Registry {
+    property: Vec<u16>,
+    counter: AtomicUsize,
+    registered: std::sync::Mutex<HashSet<WindowId>>,
+}
+
+impl Registry {
+    pub fn new() -> Self {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        Self {
+            property: wide(&format!(
+                "WindowScaler.Identity.{}.{stamp}",
+                std::process::id()
+            )),
+            counter: AtomicUsize::new(1),
+            registered: Default::default(),
+        }
+    }
+
+    pub fn valid(&self, id: WindowId) -> bool {
+        if id.cookie == 0 {
+            return false;
+        }
+        unsafe {
+            let mut pid = 0;
+            IsWindow(hwnd(id)) != 0
+                && GetWindowThreadProcessId(hwnd(id), &mut pid) != 0
+                && pid == id.pid
+                && GetPropW(hwnd(id), self.property.as_ptr()) as usize == id.cookie
+        }
+    }
+
+    pub fn require(&self, id: WindowId) -> Result<(), String> {
+        if self.valid(id) {
+            Ok(())
+        } else {
+            Err("目标已关闭、身份改变或权限不足，请刷新列表".into())
+        }
+    }
+
+    pub fn discover(&self) -> Result<Vec<WindowInfo>, String> {
+        let _dpi = DpiGuard::new();
+        unsafe extern "system" fn enumerate(window: HWND, data: LPARAM) -> i32 {
+            unsafe {
+                (&mut *(data as *mut Vec<usize>)).push(window as usize);
+            }
+            1
+        }
+        let mut handles = Vec::<usize>::new();
+        if unsafe { EnumWindows(Some(enumerate), &mut handles as *mut _ as LPARAM) } == 0 {
+            return Err(error("无法读取窗口列表"));
+        }
+        let mut result = Vec::new();
+        for handle in handles {
+            let window = handle as HWND;
+            unsafe {
+                let mut pid = 0;
+                if IsWindowVisible(window) == 0
+                    || GetWindowThreadProcessId(window, &mut pid) == 0
+                    || pid == GetCurrentProcessId()
+                {
+                    continue;
+                }
+                let extended = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+                if extended & WS_EX_TOOLWINDOW != 0
+                    || (!GetWindow(window, GW_OWNER).is_null() && extended & WS_EX_APPWINDOW == 0)
+                {
+                    continue;
+                }
+                let mut cloaked: u32 = 0;
+                if DwmGetWindowAttribute(
+                    window,
+                    DWMWA_CLOAKED as u32,
+                    &mut cloaked as *mut _ as *mut c_void,
+                    size_of::<u32>() as u32,
+                ) >= 0
+                    && cloaked != 0
+                {
+                    continue;
+                }
+                let class = window_class(window);
+                if matches!(
+                    class.as_str(),
+                    "Shell_TrayWnd"
+                        | "Shell_SecondaryTrayWnd"
+                        | "Progman"
+                        | "WorkerW"
+                        | "tooltips_class32"
+                ) {
+                    continue;
+                }
+                let title = window_title(window);
+                if title.trim().is_empty() {
+                    continue;
+                }
+                let mut cookie = GetPropW(window, self.property.as_ptr()) as usize;
+                let mut unavailable = None;
+                if cookie == 0 {
+                    cookie = self.counter.fetch_add(1, Ordering::Relaxed);
+                    if SetPropW(window, self.property.as_ptr(), cookie as *mut c_void) == 0 {
+                        cookie = 0;
+                        unavailable = Some("无法验证窗口身份，可能需要相同权限".into());
+                    }
+                }
+                let id = WindowId {
+                    hwnd: handle,
+                    pid,
+                    cookie,
+                };
+                if cookie != 0 {
+                    self.registered.lock().unwrap().insert(id);
+                }
+                result.push(WindowInfo {
+                    id,
+                    title,
+                    program: process_name(pid),
+                    size: if IsIconic(window) != 0 {
+                        None
+                    } else {
+                        client_size(window).ok()
+                    },
+                    unavailable,
+                });
+            }
+        }
+        self.registered.lock().unwrap().retain(|id| self.valid(*id));
+        result.sort_by(|a, b| {
+            a.program
+                .to_lowercase()
+                .cmp(&b.program.to_lowercase())
+                .then(a.id.pid.cmp(&b.id.pid))
+                .then(a.title.cmp(&b.title))
+        });
+        Ok(result)
+    }
+
+    pub fn resize(
+        &self,
+        id: WindowId,
+        width: u32,
+        baseline: &mut Option<Size>,
+        affected: &AtomicBool,
+    ) -> Result<Size, String> {
+        let _dpi = DpiGuard::new();
+        self.require(id)?;
+        let window = hwnd(id);
+        unsafe {
+            // Restoring a minimized window can return it to maximized. Handle
+            // those two transitions separately (WPF_RESTORETOMAXIMIZED).
+            if IsIconic(window) != 0 {
+                affected.store(true, Ordering::SeqCst);
+                ShowWindow(window, SW_RESTORE);
+                self.require(id)?;
+                if IsIconic(window) != 0 {
+                    return Err("窗口未接受恢复显示".into());
+                }
+            }
+            if baseline.is_none() {
+                *baseline = Some(client_size(window)?);
+            }
+            if IsZoomed(window) != 0 {
+                affected.store(true, Ordering::SeqCst);
+                ShowWindow(window, SW_RESTORE);
+                self.require(id)?;
+                if IsIconic(window) != 0 || IsZoomed(window) != 0 {
+                    return Err("窗口未接受恢复显示".into());
+                }
+            }
+            let current = client_size(window)?;
+            let original = *baseline.get_or_insert(current);
+            let wanted = scaled_size(width, original)?;
+            let mut frame = RECT::default();
+            if GetWindowRect(window, &mut frame) == 0 {
+                return Err(error("无法读取窗口边框"));
+            }
+            let extra_w =
+                (i64::from(frame.right) - i64::from(frame.left) - i64::from(current.width)).max(0);
+            let extra_h =
+                (i64::from(frame.bottom) - i64::from(frame.top) - i64::from(current.height)).max(0);
+            let outer_w = i64::from(wanted.width) + extra_w;
+            let outer_h = i64::from(wanted.height) + extra_h;
+            let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info) == 0 {
+                return Err(error("无法读取显示器工作区"));
+            }
+            let area = info.rcWork;
+            if outer_w > i64::from(area.right) - i64::from(area.left)
+                || outer_h > i64::from(area.bottom) - i64::from(area.top)
+            {
+                return Err(format!(
+                    "所需尺寸 {}×{} 超出当前显示器工作区",
+                    wanted.width, wanted.height
+                ));
+            }
+            let x = frame.left.clamp(area.left, area.right - outer_w as i32);
+            let y = frame.top.clamp(area.top, area.bottom - outer_h as i32);
+            self.require(id)?;
+            affected.store(true, Ordering::SeqCst);
+            // Synchronous on this window's dedicated worker. Never queue an async
+            // resize which could run after exit's maximize operation.
+            if SetWindowPos(
+                window,
+                null_mut(),
+                x,
+                y,
+                outer_w as i32,
+                outer_h as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+            ) == 0
+            {
+                return Err(error("窗口未接受缩小"));
+            }
+            std::thread::sleep(Duration::from_millis(120));
+            self.require(id)?;
+            let actual = client_size(window)?;
+            if actual != wanted {
+                return Err(format!(
+                    "目标未保持请求尺寸；实际 {}×{}，请求 {}×{}",
+                    actual.width, actual.height, wanted.width, wanted.height
+                ));
+            }
+            Ok(actual)
+        }
+    }
+
+    pub fn maximize(&self, id: WindowId) -> Result<Size, String> {
+        let _dpi = DpiGuard::new();
+        self.require(id)?;
+        unsafe {
+            ShowWindow(hwnd(id), SW_MAXIMIZE);
+            std::thread::sleep(Duration::from_millis(120));
+            self.require(id)?;
+            if IsZoomed(hwnd(id)) == 0 {
+                return Err("目标未进入最大化状态".into());
+            }
+            client_size(hwnd(id))
+        }
+    }
+
+    pub fn cleanup(&self) {
+        for id in self.registered.lock().unwrap().drain() {
+            if self.valid(id) {
+                unsafe {
+                    RemovePropW(hwnd(id), self.property.as_ptr());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Registry {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+fn client_size(window: HWND) -> Result<Size, String> {
+    let mut rect = RECT::default();
+    if unsafe { GetClientRect(window, &mut rect) } == 0 {
+        return Err(error("无法读取内容区尺寸"));
+    }
+    let size = Size {
+        width: rect.right - rect.left,
+        height: rect.bottom - rect.top,
+    };
+    if size.width <= 0 || size.height <= 0 {
+        return Err("窗口没有有效的内容区尺寸".into());
+    }
+    Ok(size)
+}
+
+fn window_title(window: HWND) -> String {
+    let mut text = [0u16; 2048];
+    let len = unsafe { GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32) };
+    String::from_utf16_lossy(&text[..len.max(0) as usize])
+}
+fn window_class(window: HWND) -> String {
+    let mut text = [0u16; 256];
+    let len = unsafe { GetClassNameW(window, text.as_mut_ptr(), text.len() as i32) };
+    String::from_utf16_lossy(&text[..len.max(0) as usize])
+}
+fn process_name(pid: u32) -> String {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return "未知程序".into();
+        }
+        let mut text = [0u16; 32768];
+        let mut len = text.len() as u32;
+        let success = QueryFullProcessImageNameW(process, 0, text.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        if success == 0 {
+            return "未知程序".into();
+        }
+        String::from_utf16_lossy(&text[..len as usize])
+            .rsplit('\\')
+            .next()
+            .unwrap_or("未知程序")
+            .to_owned()
+    }
+}
+
+pub fn show_main(handle: usize) {
+    unsafe {
+        ShowWindow(handle as HWND, SW_RESTORE);
+        SetForegroundWindow(handle as HWND);
+    }
+}
+pub fn hide_main(handle: usize) {
+    unsafe {
+        ShowWindow(handle as HWND, SW_HIDE);
+    }
+}
+
+pub fn fatal_message(message: &str) {
+    unsafe {
+        MessageBoxW(
+            null_mut(),
+            wide(message).as_ptr(),
+            wide("窗口缩放器").as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;

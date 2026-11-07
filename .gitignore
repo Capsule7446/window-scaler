@@ -1,0 +1,34 @@
+/target/
+/dist/
+/test-output/
+/outputs/
+/.scratch/
+
+# Native build artifacts and diagnostic files
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+*.log
+*.tmp
+*.rs.bk
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+settings.json
+last-error.txt
+
+# Editor and OS metadata
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Cargo.lock is intentionally tracked for reproducible application builds.
