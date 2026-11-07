@@ -1,8 +1,16 @@
-name: 任务
-description: 提交一个可以独立验收的功能、修复或验证任务
-title: "[任务] "
-labels: [needs-triage]
+name: Feature 小功能
+description: 提交一个归属于Epic的小功能
+title: "[Feature] "
+labels: [feature, needs-triage]
 body:
+  - type: input
+    id: epic
+    attributes:
+      label: 所属Epic
+      description: 填写Epic编号或链接，创建后使用GitHub子任务关系关联。
+      placeholder: "#5"
+    validations:
+      required: true
   - type: textarea
     id: goal
     attributes:

@@ -1,0 +1,20 @@
+name: Branch policy
+
+on:
+  pull_request:
+    branches: [master, 'epic/**', 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  branch-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test release policy
+        run: node --test ci/*.test.mjs
+      - name: Validate source and target branches
+        run: node ci/policy.mjs route
