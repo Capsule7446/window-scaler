@@ -8,10 +8,12 @@ const release = { merged_at: '2026-11-08', base: { ref: 'master' }, head: { ref:
 test('feature can only merge into its own epic; master only receives release branches', () => {
   validateRoute('feature/5/6-release-ci', 'epic/5-window-scaler-v0.1');
   validateRoute('hotfix/9-size', 'release/v0.1.1');
+  validateRoute('hotfix/9-ci-artifact-retry', 'release/ci-setup');
   validateRoute('release/v0.1.0', 'master');
   assert.throws(() => validateRoute('feature/5/6-release-ci', 'epic/8-other'));
   assert.throws(() => validateRoute('feature/5/6-release-ci', 'master'));
   assert.throws(() => validateRoute('hotfix/9-size', 'master'));
+  assert.throws(() => validateRoute('feature/5/6-release-ci', 'release/ci-setup'));
 });
 test('release branch builds packages without publishing', () => {
   assert.deepEqual(releasePlan({ ...base, refName: 'release/v0.1.0' }), { version: '0.1.0', tag: 'v0.1.0', build: true, publish: false });
