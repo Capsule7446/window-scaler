@@ -22,7 +22,7 @@ export function validateRoute(head, base) {
     const feature = /^feature\/(\d+)\/\d+-[a-z0-9][a-z0-9.-]*$/.exec(head);
     if (feature?.[1] === epic[1] || /^hotfix\/\d+-[a-z0-9][a-z0-9.-]*$/.test(head) || head === 'master') return;
   }
-  if (versionOf(base) && (/^epic\/\d+-[a-z0-9][a-z0-9.-]*$/.test(head) || /^hotfix\/\d+-[a-z0-9][a-z0-9.-]*$/.test(head))) return;
+  if ((versionOf(base) || base === 'release/ci-setup') && (/^epic\/\d+-[a-z0-9][a-z0-9.-]*$/.test(head) || /^hotfix\/\d+-[a-z0-9][a-z0-9.-]*$/.test(head))) return;
   throw new Error(`Invalid branch route: ${head} -> ${base}`);
 }
 
