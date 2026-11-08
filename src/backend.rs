@@ -146,6 +146,7 @@ impl Backend {
                         .filter(|(_, w)| {
                             w.affected.load(Ordering::SeqCst)
                                 || w.pending_shrink.load(Ordering::SeqCst)
+                                || w.busy.load(Ordering::SeqCst)
                         })
                         .map(|(id, _)| *id)
                         .collect()

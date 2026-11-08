@@ -313,6 +313,55 @@ fn exit_restores_original_size_when_system_maximize_stays_shrunken() {
 }
 
 #[test]
+fn exit_cannot_skip_a_pending_maximize_on_a_never_shrunken_window() {
+    let fixture = Fixture::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let id = fixture.register(&backend.registry);
+    BLOCK_STARTED.store(false, Ordering::SeqCst);
+    unsafe {
+        PostMessageW(fixture.handle as HWND, BLOCK_FIXTURE, 0, 0);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !BLOCK_STARTED.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    backend.run(vec![id], Action::Maximize, false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("maximize batch")
+    };
+    assert!(outcomes[0].result.as_ref().unwrap_err().contains("超时"));
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("exit batch")
+    };
+    assert!(exiting);
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "pending maximize must prevent a successful empty exit"
+    );
+    assert!(
+        outcomes[0]
+            .result
+            .as_ref()
+            .unwrap_err()
+            .contains("尚未完成")
+    );
+    thread::sleep(Duration::from_secs(2));
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("retry batch")
+    };
+    assert!(
+        outcomes.is_empty(),
+        "completed maximize-only target needs no exit operation"
+    );
+    assert_ne!(unsafe { IsZoomed(fixture.handle as HWND) }, 0);
+}
+
+#[test]
 fn maximize_does_not_trust_a_flag_without_larger_geometry() {
     let fixture = Fixture::new();
     let registry = Registry::new();
