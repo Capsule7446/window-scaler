@@ -43,6 +43,7 @@ fn main() {
             "no-tray",
             "closed",
             "visibility",
+            "select-list",
         ] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--case", case])
