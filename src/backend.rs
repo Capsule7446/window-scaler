@@ -185,6 +185,16 @@ impl Backend {
                         });
                         continue;
                     }
+                    // Work can finish between collecting exit targets and
+                    // claiming this slot. An idle, never-modified target needs
+                    // no additional maximize operation merely to leave the app.
+                    if exiting
+                        && !worker.affected.load(Ordering::SeqCst)
+                        && !worker.pending_shrink.load(Ordering::SeqCst)
+                    {
+                        worker.busy.store(false, Ordering::SeqCst);
+                        continue;
+                    }
                     worker
                         .pending_shrink
                         .store(matches!(action, Action::Shrink(_)), Ordering::SeqCst);
