@@ -103,6 +103,19 @@ async fn drive(
         })
     })?;
     pause(cx, 100).await;
+    if case == "busy-retry" {
+        unsafe {
+            PostMessageW(handles[0] as HWND, fixture::BLOCK, 0, 0);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !fixture::block_started(handles[0]) {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "fixture did not acknowledge blocking"
+            );
+            pause(cx, 10).await;
+        }
+    }
     if case == "closed" {
         unsafe {
             PostMessageW(handles[0] as HWND, WM_CLOSE, 0, 0);
@@ -119,11 +132,6 @@ async fn drive(
             hidden_selected(&view.windows, &view.selected, &view.search.read(cx).value()),
             1
         );
-        if case == "busy-retry" {
-            unsafe {
-                PostMessageW(handles[0] as HWND, fixture::BLOCK, 0, 0);
-            }
-        }
         view.begin(Action::Shrink(240), false, cx);
     });
     if case == "busy-retry" {
@@ -132,14 +140,26 @@ async fn drive(
         view.update(cx, |view, _| {
             assert!(view.busy);
             assert!(view.exit_requested);
+            assert!(view.status.contains("等待当前操作"));
         });
         wait(view, cx, |view| view.exit_failed, "busy exit failure").await?;
         anyhow::ensure!(
             unsafe { IsWindowVisible(hwnd as HWND) } != 0,
             "failure remains visible"
         );
-        view.update(cx, |view, _| assert!(!view.exit_errors.is_empty()));
+        view.update(cx, |view, _| {
+            assert!(
+                view.exit_errors
+                    .iter()
+                    .any(|error| error.contains("尚未完成"))
+            )
+        });
         pause(cx, 2000).await;
+        assert_eq!(
+            fixture::size(handles[0]).width,
+            240,
+            "old shrink must finish before retry"
+        );
         ready.store(true, Ordering::SeqCst);
         view.update(cx, |view, cx| view.begin(Action::Maximize, true, cx));
         return Ok(());
@@ -190,6 +210,10 @@ async fn drive(
         view.update(cx, |view, cx| view.quit(cx));
         return Ok(());
     }
+    let miniature_sizes: Vec<_> = handles
+        .iter()
+        .map(|handle| fixture::size(*handle))
+        .collect();
     unsafe {
         PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
     }
@@ -198,6 +222,13 @@ async fn drive(
         unsafe { IsWindowVisible(hwnd as HWND) } == 0,
         "close must hide main window"
     );
+    for (handle, size) in handles.iter().zip(&miniature_sizes) {
+        assert_eq!(
+            fixture::size(*handle),
+            *size,
+            "hiding must not change target size"
+        );
+    }
     let tray_handle = view.update(cx, |view, _| {
         let tray = view.tray.as_ref().unwrap();
         assert!(
@@ -217,6 +248,13 @@ async fn drive(
         "tray restore",
     )
     .await?;
+    for (handle, size) in handles.iter().zip(&miniature_sizes) {
+        assert_eq!(
+            fixture::size(*handle),
+            *size,
+            "tray opening must not change target size"
+        );
+    }
     view.update(cx, |view, _| assert!(view.selected.is_empty()));
     ready.store(true, Ordering::SeqCst);
     menu_exit(view, cx);

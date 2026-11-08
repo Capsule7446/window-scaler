@@ -20,6 +20,13 @@ fn wide(text: &str) -> Vec<u16> {
 unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match message {
         BLOCK => {
+            unsafe {
+                SetPropW(
+                    window,
+                    wide("WindowScaler.Acceptance.BlockStarted").as_ptr(),
+                    1usize as _,
+                );
+            }
             thread::sleep(Duration::from_millis(5500));
             0
         }
@@ -66,50 +73,76 @@ pub fn size(handle: usize) -> crate::model::Size {
     }
 }
 
+pub fn block_started(handle: usize) -> bool {
+    unsafe {
+        !GetPropW(
+            handle as HWND,
+            wide("WindowScaler.Acceptance.BlockStarted").as_ptr(),
+        )
+        .is_null()
+    }
+}
+
 pub fn serve(path: &str) {
     let mut workers = Vec::new();
     let mut handles = Vec::new();
     for index in 0..2 {
         let (tx, rx) = std::sync::mpsc::channel();
-        workers.push(thread::spawn(move || unsafe {
-            let _dpi = crate::native::DpiGuard::new();
-            let class = wide(&format!(
-                "WindowScalerAcceptance.{}.{}",
-                std::process::id(),
-                index
-            ));
-            let module = GetModuleHandleW(null_mut());
-            let descriptor = WNDCLASSW {
-                lpfnWndProc: Some(procedure),
-                hInstance: module,
-                lpszClassName: class.as_ptr(),
-                ..Default::default()
-            };
-            assert_ne!(RegisterClassW(&descriptor), 0);
-            let window = CreateWindowExW(
-                WS_EX_NOACTIVATE,
-                class.as_ptr(),
-                wide(&format!("Scaler Acceptance {index}")).as_ptr(),
-                WS_OVERLAPPEDWINDOW,
-                80 + index * 40,
-                80 + index * 40,
-                900,
-                600,
-                null_mut(),
-                null_mut(),
-                module,
-                null_mut::<c_void>(),
-            );
-            assert!(!window.is_null());
-            ShowWindow(window, SW_SHOWNOACTIVATE);
-            tx.send(window as usize).unwrap();
-            let mut message = MSG::default();
-            while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-            UnregisterClassW(class.as_ptr(), module);
-        }));
+        let (stop, stopped) = std::sync::mpsc::channel();
+        workers.push((
+            stop,
+            thread::spawn(move || unsafe {
+                let _dpi = crate::native::DpiGuard::new();
+                let class = wide(&format!(
+                    "WindowScalerAcceptance.{}.{}",
+                    std::process::id(),
+                    index
+                ));
+                let module = GetModuleHandleW(null_mut());
+                let descriptor = WNDCLASSW {
+                    lpfnWndProc: Some(procedure),
+                    hInstance: module,
+                    lpszClassName: class.as_ptr(),
+                    ..Default::default()
+                };
+                assert_ne!(RegisterClassW(&descriptor), 0);
+                let window = CreateWindowExW(
+                    WS_EX_NOACTIVATE,
+                    class.as_ptr(),
+                    wide(&format!("Scaler Acceptance {index}")).as_ptr(),
+                    WS_OVERLAPPEDWINDOW,
+                    80 + index * 40,
+                    80 + index * 40,
+                    900,
+                    600,
+                    null_mut(),
+                    null_mut(),
+                    module,
+                    null_mut::<c_void>(),
+                );
+                assert!(!window.is_null());
+                ShowWindow(window, SW_SHOWNOACTIVATE);
+                tx.send(window as usize).unwrap();
+                let mut message = MSG::default();
+                'messages: loop {
+                    if stopped.try_recv().is_ok() {
+                        // Only the creating thread destroys its still-live window.
+                        // A closed fixture has already left this loop via WM_QUIT.
+                        DestroyWindow(window);
+                        break;
+                    }
+                    while PeekMessageW(&mut message, null_mut(), 0, 0, PM_REMOVE) != 0 {
+                        if message.message == WM_QUIT {
+                            break 'messages;
+                        }
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                UnregisterClassW(class.as_ptr(), module);
+            }),
+        ));
         handles.push(rx.recv().unwrap());
     }
     std::fs::write(path, serde_json::to_vec(&handles).unwrap()).unwrap();
@@ -119,12 +152,10 @@ pub fn serve(path: &str) {
     {
         thread::sleep(Duration::from_millis(50));
     }
-    for handle in handles {
-        unsafe {
-            PostMessageW(handle as HWND, WM_CLOSE, 0, 0);
-        }
+    for (stop, _) in &workers {
+        let _ = stop.send(());
     }
-    for worker in workers {
+    for (_, worker) in workers {
         worker.join().unwrap();
     }
 }
