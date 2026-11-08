@@ -36,6 +36,8 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 
 `desktop-test` 需要已登录的 Windows 桌面，在独立进程中创建专用窗口并运行真实 GPUI 与托盘消息；`desktop-test-release` 验证优化构建。它们不向游戏或其他应用发送键鼠输入，测试设置与正常设置隔离。普通 `test` 不运行桌面验收，也不操作游戏。
 
+`build.ps1 -Mode permission-test` 是独立的权限拒绝验收，需要当前进程具备创建受限令牌子进程的权限；仅降低专用测试子进程的完整性，不修改 UAC 设置，也不为工具提权。默认桌面验收不包含这一环境条件。
+
 ## 项目与任务
 
 - 代码仓库：[Capsule7446/window-scaler](https://github.com/Capsule7446/window-scaler)

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('check','test','test-release','desktop-test','desktop-test-release','build','release','clippy','fmt')]
+    [ValidateSet('check','test','test-release','desktop-test','desktop-test-release','permission-test','build','release','clippy','fmt')]
     [string]$Mode = 'release'
 )
 $ErrorActionPreference = 'Stop'
@@ -32,6 +32,7 @@ $cargoArgs = switch ($Mode) {
     'test-release' { @('test','--release','--locked','--','--test-threads=1') }
     'desktop-test' { @('test','--locked','--features','desktop-acceptance','--test','desktop_acceptance') }
     'desktop-test-release' { @('test','--release','--locked','--features','desktop-acceptance','--test','desktop_acceptance') }
+    'permission-test' { @('test','--locked','--features','desktop-acceptance','--test','desktop_acceptance','--','--case','permissions') }
     'build' { @('build','--locked') }
     'release' { @('build','--release','--locked') }
     'clippy' { @('clippy','--locked','--all-targets','--all-features','--','-D','warnings') }

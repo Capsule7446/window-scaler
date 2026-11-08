@@ -10,6 +10,7 @@ mod fixture;
 mod model;
 #[path = "../../src/native.rs"]
 mod native;
+mod permissions;
 #[path = "../../src/settings.rs"]
 mod settings;
 #[path = "../../src/tray.rs"]
@@ -25,8 +26,15 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| arg == "--fixture") {
         fixture::serve(&args[2]);
+    } else if args.get(1).is_some_and(|arg| arg == "--permission-probe") {
+        let code = permissions::probe(args[2].parse().unwrap());
+        std::process::exit(code as i32);
     } else if args.get(1).is_some_and(|arg| arg == "--case") {
-        app::driver::run(args[2].clone());
+        if args[2] == "permissions" {
+            permissions::run();
+        } else {
+            app::driver::run(args[2].clone());
+        }
     } else {
         for case in ["normal", "busy-retry", "force", "no-tray", "closed"] {
             let mut child = Command::new(std::env::current_exe().unwrap())
