@@ -31,6 +31,34 @@ async fn wait(
     }
 }
 
+fn click_list_header(window: AnyWindowHandle, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    // The select-all control in the fixed list header. Dispatch only to our GPUI
+    // window; no system mouse or keyboard input can reach another application.
+    window.update(cx, |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let position = point(px(40.), px(190.));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                position,
+                button: MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                position,
+                button: MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+    })?;
+    Ok(())
+}
+
 fn menu_exit(view: &Entity<Scaler>, cx: &mut AsyncApp) {
     let handle = view.update(cx, |view, _| view.tray.as_ref().unwrap().window_handle());
     let menu = crate::tray::TEST_MENU.load(Ordering::SeqCst);
@@ -103,6 +131,65 @@ async fn drive(
         })
     })?;
     pause(cx, 100).await;
+    if case == "select-list" {
+        view.update(cx, |view, cx| {
+            view.selected.clear();
+            cx.notify();
+        });
+        click_list_header(window, cx)?;
+        pause(cx, 80).await;
+        view.update(cx, |view, _| {
+            assert_eq!(
+                view.selected.len(),
+                1,
+                "select-all only selects the current search result"
+            );
+            assert_eq!(view.selected.iter().next().unwrap().hwnd, handles[0]);
+        });
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.search.update(cx, |search, cx| {
+                    search.set_value(pid.to_string(), window, cx)
+                });
+            })
+        })?;
+        pause(cx, 80).await;
+        click_list_header(window, cx)?;
+        pause(cx, 80).await;
+        view.update(cx, |view, _| {
+            assert_eq!(
+                view.selected.len(),
+                2,
+                "partial selection becomes all selected"
+            )
+        });
+        window.update(cx, |_, window, cx| {
+            window.resize(size(px(760.), px(540.)));
+            view.update(cx, |view, cx| {
+                view.search.update(cx, |search, cx| {
+                    search.set_value("Acceptance 0", window, cx)
+                });
+            })
+        })?;
+        pause(cx, 80).await;
+        click_list_header(window, cx)?;
+        pause(cx, 80).await;
+        view.update(cx, |view, cx| {
+            assert_eq!(
+                view.selected.len(),
+                1,
+                "deselect-all preserves off-filter selections"
+            );
+            assert_eq!(view.selected.iter().next().unwrap().hwnd, handles[1]);
+            view.begin(Action::Shrink(240), false, cx);
+        });
+        wait(view, cx, |view| !view.busy, "filtered selection shrink").await?;
+        assert_eq!(fixture::size(handles[1]).width, 240);
+        assert_ne!(fixture::size(handles[0]).width, 240);
+        ready.store(true, Ordering::SeqCst);
+        menu_exit(view, cx);
+        return Ok(());
+    }
     if case == "visibility" {
         let frames: Vec<_> = handles
             .iter()
@@ -353,9 +440,10 @@ pub fn run(case: String) {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(920.), px(680.)),
+                        size(px(960.), px(680.)),
                         cx,
                     ))),
+                    window_min_size: Some(size(px(760.), px(540.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some(format!("窗口缩放器验收 · {run_case}").into()),
                         ..Default::default()
