@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- PROTOTYPE: Three batch-window layouts on one route, switchable via ?variant=A|B|C. -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>窗口缩放器 · 布局对比</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="preview">
+    <header class="preview-header">
+      <div class="preview-heading"><span class="eyebrow">WINDOW SCALER / DESIGN STUDY</span><h1>批量窗口管理</h1><p id="variant-description"></p></div>
+      <div class="preview-tools"><span class="prototype-tag">交互原型 · 模拟数据</span><div class="preview-buttons"><button id="size-toggle" class="preview-btn" aria-pressed="false">紧凑尺寸</button><button id="failure-toggle" class="preview-btn" aria-pressed="false">模拟部分失败</button><button id="reset" class="preview-btn">重置演示</button></div></div>
+    </header>
+    <section class="stage" aria-label="桌面窗口预览"><div id="desktop" class="desktop-shell"><div id="app"></div></div></section>
+    <div class="preview-footer"><span>可搜索、勾选并试用四个操作；三个方案共享当前模拟状态。</span><details><summary>查看模拟状态</summary><pre id="state-dump"></pre></details></div>
+  </main>
+  <nav class="variant-switcher" aria-label="切换布局方案"><button id="previous" class="switch-arrow" aria-label="上一套布局">←</button><div id="variant-tabs" role="tablist" aria-label="布局方案"></div><button id="next" class="switch-arrow" aria-label="下一套布局">→</button><span class="keyboard-hint">← → 切换</span></nav>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
