@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+desktop-acceptance = []
+
+[[test]]
+name = "desktop_acceptance"
+path = "tests/desktop/main.rs"
+harness = false
+required-features = ["desktop-acceptance"]
+
 [dependencies]
 anyhow = "1"
 async-channel = "2"

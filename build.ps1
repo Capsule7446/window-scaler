@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('check','test','test-release','build','release','clippy','fmt')]
+    [ValidateSet('check','test','test-release','desktop-test','desktop-test-release','build','release','clippy','fmt')]
     [string]$Mode = 'release'
 )
 $ErrorActionPreference = 'Stop'
@@ -30,9 +30,11 @@ $cargoArgs = switch ($Mode) {
     'check' { @('check','--locked') }
     'test' { @('test','--locked','--','--test-threads=1') }
     'test-release' { @('test','--release','--locked','--','--test-threads=1') }
+    'desktop-test' { @('test','--locked','--features','desktop-acceptance','--test','desktop_acceptance') }
+    'desktop-test-release' { @('test','--release','--locked','--features','desktop-acceptance','--test','desktop_acceptance') }
     'build' { @('build','--locked') }
     'release' { @('build','--release','--locked') }
-    'clippy' { @('clippy','--locked','--all-targets','--','-D','warnings') }
+    'clippy' { @('clippy','--locked','--all-targets','--all-features','--','-D','warnings') }
     'fmt' { @('fmt','--','--check') }
 }
 & (Join-Path $cargoBin 'cargo.exe') @cargoArgs

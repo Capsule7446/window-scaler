@@ -28,10 +28,13 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 ```powershell
 .\build.ps1 -Mode test
 .\build.ps1 -Mode clippy
+.\build.ps1 -Mode desktop-test
 .\build.ps1 -Mode release
 ```
 
 产物为 `dist\WindowScaler.exe`。依赖通过 `Cargo.lock` 固定。
+
+`desktop-test` 需要已登录的 Windows 桌面，在独立进程中创建专用窗口并运行真实 GPUI 与托盘消息；`desktop-test-release` 验证优化构建。它们不向游戏或其他应用发送键鼠输入，测试设置与正常设置隔离。普通 `test` 不运行桌面验收，也不操作游戏。
 
 ## 项目与任务
 
@@ -42,4 +45,4 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 
 `release/vX.Y.Z`会自动测试打包，合入master后由GitHub Actions自动打tag并发布ZIP、EXE和校验文件；正式包见 [GitHub Releases](https://github.com/Capsule7446/window-scaler/releases)。
 
-目前已通过8项测试和Release构建；[托盘完整流程 #3](https://github.com/Capsule7446/window-scaler/issues/3)与[正式版及实机兼容验收 #4](https://github.com/Capsule7446/window-scaler/issues/4)保持打开。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
+当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。正式发布由[版本验收 #4](https://github.com/Capsule7446/window-scaler/issues/4)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
