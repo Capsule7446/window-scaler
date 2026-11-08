@@ -2,6 +2,8 @@
 
 Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗口尺寸，并可隐藏或显示目标窗口。
 
+v0.2.0 提供双栏批量操作界面、当前列表全选，以及目标窗口隐藏/显示。版本变化见[更新记录](CHANGELOG.md)。升级前请从旧版正常退出，让它完成窗口恢复。
+
 ## 使用
 
 1. 双击 `WindowScaler.exe`，在左侧搜索并勾选窗口；表头复选框可全选当前列表中的可操作窗口。
@@ -49,8 +51,8 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 - 代码仓库：[Capsule7446/window-scaler](https://github.com/Capsule7446/window-scaler)
 - Ticket跟踪：[GitHub Issues](https://github.com/Capsule7446/window-scaler/issues)
 - [已确认规格](docs/spec.md) · [验证记录](docs/validation.md) · [任务跟踪规则](docs/agents/issue-tracker.md)
-- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。当前大功能为 [Epic #5](https://github.com/Capsule7446/window-scaler/issues/5)。
+- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。v0.2.0 集成[隐藏与显示](https://github.com/Capsule7446/window-scaler/issues/18)和[双栏界面](https://github.com/Capsule7446/window-scaler/issues/21)。
 
 `release/vX.Y.Z`会自动测试打包，合入master后由GitHub Actions自动打tag并发布ZIP、EXE和校验文件；正式包见 [GitHub Releases](https://github.com/Capsule7446/window-scaler/releases)。
 
-当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。正式发布由[版本验收 #4](https://github.com/Capsule7446/window-scaler/issues/4)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
+当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。v0.2.0 正式发布由[版本验收 #24](https://github.com/Capsule7446/window-scaler/issues/24)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
