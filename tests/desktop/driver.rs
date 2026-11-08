@@ -103,6 +103,74 @@ async fn drive(
         })
     })?;
     pause(cx, 100).await;
+    if case == "visibility" {
+        let frames: Vec<_> = handles
+            .iter()
+            .map(|handle| fixture::frame(*handle))
+            .collect();
+        view.update(cx, |view, cx| view.begin(Action::Hide, false, cx));
+        wait(view, cx, |view| !view.busy, "hide completion").await?;
+        for handle in handles {
+            assert_eq!(unsafe { IsWindowVisible(*handle as HWND) }, 0);
+            assert_eq!(unsafe { IsIconic(*handle as HWND) }, 0);
+        }
+        view.update(cx, |view, cx| view.refresh(cx));
+        wait(view, cx, |view| !view.refreshing, "hidden target discovery").await?;
+        view.update(cx, |view, cx| {
+            assert_eq!(
+                view.selected.len(),
+                2,
+                "hidden targets remain selectable after refresh"
+            );
+            assert_eq!(
+                hidden_selected(&view.windows, &view.selected, &view.search.read(cx).value()),
+                1
+            );
+            for id in &view.selected {
+                assert_eq!(view.results[id], ("已隐藏".into(), false));
+            }
+            view.begin(Action::Show, false, cx);
+        });
+        wait(view, cx, |view| !view.busy, "show completion").await?;
+        for (handle, before) in handles.iter().zip(&frames) {
+            assert_ne!(unsafe { IsWindowVisible(*handle as HWND) }, 0);
+            assert_eq!(fixture::frame(*handle), *before);
+        }
+        // One target is only hidden, the other also needs exit's existing resize recovery.
+        view.update(cx, |view, cx| {
+            view.selected.retain(|id| id.hwnd == handles[0]);
+            view.begin(Action::Shrink(240), false, cx);
+        });
+        wait(view, cx, |view| !view.busy, "visibility case shrink").await?;
+        view.update(cx, |view, cx| {
+            view.selected.extend(
+                view.windows
+                    .iter()
+                    .filter(|w| w.id.pid == pid)
+                    .map(|w| w.id),
+            );
+            view.begin(Action::Hide, false, cx);
+        });
+        wait(view, cx, |view| !view.busy, "hide before exit").await?;
+        view.update(cx, |view, cx| {
+            view.selected.clear();
+            view.handle_event(Event::Open, cx);
+        });
+        wait(
+            view,
+            cx,
+            |view| !view.refreshing,
+            "open with hidden targets",
+        )
+        .await?;
+        view.update(cx, |view, _| {
+            assert!(view.selected.is_empty());
+            assert_eq!(view.windows.iter().filter(|w| w.id.pid == pid).count(), 2);
+        });
+        ready.store(true, Ordering::SeqCst);
+        menu_exit(view, cx);
+        return Ok(());
+    }
     if case == "busy-retry" {
         unsafe {
             PostMessageW(handles[0] as HWND, fixture::BLOCK, 0, 0);
@@ -263,6 +331,11 @@ async fn drive(
 
 pub fn run(case: String) {
     let fixtures = Fixtures::start();
+    let original_frames: Vec<_> = fixtures
+        .handles
+        .iter()
+        .map(|handle| fixture::frame(*handle))
+        .collect();
     let handles = fixtures.handles.clone();
     let pid = fixtures.pid;
     let ready = Arc::new(AtomicBool::new(false));
@@ -314,6 +387,20 @@ pub fn run(case: String) {
     );
     assert!(failure.lock().unwrap().is_none());
     for (index, handle) in fixtures.handles.iter().enumerate() {
+        if case == "visibility" {
+            assert_ne!(
+                unsafe { IsWindowVisible(*handle as HWND) },
+                0,
+                "exit must show every hidden target"
+            );
+            if index == 1 {
+                assert_eq!(
+                    fixture::frame(*handle),
+                    original_frames[index],
+                    "hide-only target must retain its geometry"
+                );
+            }
+        }
         if case == "closed" && index == 0 {
             assert_eq!(unsafe { IsWindow(*handle as HWND) }, 0);
             continue;
