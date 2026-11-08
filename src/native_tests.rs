@@ -399,6 +399,47 @@ fn failed_maximize_without_original_size_does_not_invent_a_restore_size() {
 }
 
 #[test]
+fn rejected_first_resize_does_not_freeze_an_unused_original_size() {
+    let fixture = Fixture::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let id = fixture.register(&backend.registry);
+    backend.run(vec![id], Action::Shrink(20000), false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.is_err());
+    unsafe {
+        SetWindowPos(
+            fixture.handle as HWND,
+            null_mut(),
+            80,
+            80,
+            850,
+            600,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+        );
+    }
+    let original = client_size(fixture.handle as HWND).unwrap();
+    backend.run(vec![id], Action::Shrink(240), false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.is_ok());
+    unsafe {
+        SetWindowLongPtrW(fixture.handle as HWND, GWLP_USERDATA, CLAMP_CURRENT_MAX);
+    }
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert_eq!(
+        outcomes[0].result.as_ref().unwrap(),
+        &AppliedChange::RestoredOriginal(original)
+    );
+}
+
+#[test]
 fn exit_reports_failure_when_original_size_no_longer_fits_the_work_area() {
     let fixture = Fixture::new();
     unsafe {

@@ -209,7 +209,8 @@ impl Registry {
         unsafe {
             // Restoring a minimized window can return it to maximized. Handle
             // those two transitions separately (WPF_RESTORETOMAXIMIZED).
-            if IsIconic(window) != 0 {
+            let was_minimized = IsIconic(window) != 0;
+            if was_minimized {
                 affected.store(true, Ordering::SeqCst);
                 ShowWindow(window, SW_RESTORE);
                 self.require(id)?;
@@ -217,8 +218,11 @@ impl Registry {
                     return Err("窗口未接受恢复显示".into());
                 }
             }
-            if baseline.is_none() {
-                *baseline = Some(client_size(window)?);
+            let original = baseline.unwrap_or(client_size(window)?);
+            // Preserve the baseline once a state-changing call may take effect.
+            // A validation-only failure on a normal window must not freeze it.
+            if was_minimized || IsZoomed(window) != 0 {
+                *baseline = Some(original);
             }
             if IsZoomed(window) != 0 {
                 affected.store(true, Ordering::SeqCst);
@@ -229,7 +233,6 @@ impl Registry {
                 }
             }
             let current = client_size(window)?;
-            let original = *baseline.get_or_insert(current);
             let wanted = scaled_size(width, original)?;
             let mut frame = RECT::default();
             if GetWindowRect(window, &mut frame) == 0 {
@@ -261,6 +264,7 @@ impl Registry {
             let x = frame.left.clamp(area.left, area.right - outer_w as i32);
             let y = frame.top.clamp(area.top, area.bottom - outer_h as i32);
             self.require(id)?;
+            *baseline = Some(original);
             affected.store(true, Ordering::SeqCst);
             // Synchronous on this window's dedicated worker. Never queue an async
             // resize which could run after exit's maximize operation.
