@@ -22,7 +22,7 @@ fn main() {
         .run(|cx| {
             gpui_kit::init(cx);
             gpui_kit::component::set_locale("zh-CN");
-            let bounds = Bounds::centered(None, size(px(920.), px(680.)), cx);
+            let bounds = Bounds::centered(None, size(px(960.), px(680.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(760.), px(540.))),

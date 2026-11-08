@@ -17,6 +17,8 @@ use std::{
 pub enum Action {
     Shrink(u32),
     Maximize,
+    Hide,
+    Show,
 }
 
 #[derive(Debug)]
@@ -30,12 +32,15 @@ pub enum AppliedChange {
     Shrunk(Size),
     Maximized(Size),
     RestoredOriginal(Size),
+    Hidden,
+    Shown,
 }
 
 impl AppliedChange {
-    pub fn size(self) -> Size {
+    pub fn size(self) -> Option<Size> {
         match self {
-            Self::Shrunk(size) | Self::Maximized(size) | Self::RestoredOriginal(size) => size,
+            Self::Shrunk(size) | Self::Maximized(size) | Self::RestoredOriginal(size) => Some(size),
+            Self::Hidden | Self::Shown => None,
         }
     }
 }
@@ -52,6 +57,7 @@ pub enum Event {
 
 struct Job {
     action: Action,
+    exiting: bool,
     reply: mpsc::Sender<Outcome>,
 }
 struct Worker {
@@ -74,23 +80,48 @@ impl Worker {
             .spawn(move || {
                 let mut baseline = None;
                 while let Ok(job) = rx.recv() {
-                    let result = match job.action {
-                        Action::Shrink(width) => registry
-                            .resize(id, width, &mut baseline, &worker_affected)
-                            .map(AppliedChange::Shrunk),
-                        Action::Maximize => match registry.maximize(id) {
-                            Ok(size) => Ok(AppliedChange::Maximized(size)),
-                            Err(maximize_error) => match baseline {
-                                Some(original) => registry
-                                    .restore_original(id, original, &worker_affected)
-                                    .map(AppliedChange::RestoredOriginal)
-                                    .map_err(|restore_error| {
-                                        format!("{maximize_error}；恢复原尺寸失败：{restore_error}")
-                                    }),
-                                None => Err(format!("{maximize_error}；本次运行没有原尺寸记录")),
+                    let result = (|| -> Result<AppliedChange, String> {
+                        if job.exiting {
+                            if registry.needs_show(id) {
+                                registry.show(id)?;
+                            }
+                            if !worker_affected.load(Ordering::SeqCst) {
+                                return Ok(AppliedChange::Shown);
+                            }
+                        } else if !matches!(job.action, Action::Hide | Action::Show)
+                            && registry.needs_show(id)
+                        {
+                            registry.show(id)?;
+                        }
+                        let action = if job.exiting {
+                            Action::Maximize
+                        } else {
+                            job.action
+                        };
+                        match action {
+                            Action::Shrink(width) => registry
+                                .resize(id, width, &mut baseline, &worker_affected)
+                                .map(AppliedChange::Shrunk),
+                            Action::Maximize => match registry.maximize(id) {
+                                Ok(size) => Ok(AppliedChange::Maximized(size)),
+                                Err(maximize_error) => match baseline {
+                                    Some(original) => registry
+                                        .restore_original(id, original, &worker_affected)
+                                        .map(AppliedChange::RestoredOriginal)
+                                        .map_err(|restore_error| {
+                                            format!(
+                                                "{maximize_error}；恢复原尺寸失败：{restore_error}"
+                                            )
+                                        }),
+                                    None => {
+                                        Err(format!("{maximize_error}；本次运行没有原尺寸记录"))
+                                    }
+                                },
                             },
-                        },
-                    };
+                            Action::Hide => registry.hide(id).map(|()| AppliedChange::Hidden),
+                            Action::Show => registry.show(id).map(|()| AppliedChange::Shown),
+                        }
+                    })();
                     worker_pending.store(false, Ordering::SeqCst);
                     worker_busy.store(false, Ordering::SeqCst);
                     let _ = job.reply.send(Outcome { id, result });
@@ -143,10 +174,11 @@ impl Backend {
                 let targets = if exiting {
                     workers
                         .iter()
-                        .filter(|(_, w)| {
+                        .filter(|(id, w)| {
                             w.affected.load(Ordering::SeqCst)
                                 || w.pending_shrink.load(Ordering::SeqCst)
                                 || w.busy.load(Ordering::SeqCst)
+                                || this.registry.needs_show(**id)
                         })
                         .map(|(id, _)| *id)
                         .collect()
@@ -187,10 +219,11 @@ impl Backend {
                     }
                     // Work can finish between collecting exit targets and
                     // claiming this slot. An idle, never-modified target needs
-                    // no additional maximize operation merely to leave the app.
+                    // no additional operation merely to leave the app.
                     if exiting
                         && !worker.affected.load(Ordering::SeqCst)
                         && !worker.pending_shrink.load(Ordering::SeqCst)
+                        && !this.registry.needs_show(id)
                     {
                         worker.busy.store(false, Ordering::SeqCst);
                         continue;
@@ -202,6 +235,7 @@ impl Backend {
                         .tx
                         .send(Job {
                             action,
+                            exiting,
                             reply: tx.clone(),
                         })
                         .is_err()

@@ -73,6 +73,13 @@ pub fn size(handle: usize) -> crate::model::Size {
     }
 }
 
+pub fn frame(handle: usize) -> [i32; 4] {
+    let _dpi = crate::native::DpiGuard::new();
+    let mut rect = RECT::default();
+    assert_ne!(unsafe { GetWindowRect(handle as HWND, &mut rect) }, 0);
+    [rect.left, rect.top, rect.right, rect.bottom]
+}
+
 pub fn block_started(handle: usize) -> bool {
     unsafe {
         !GetPropW(

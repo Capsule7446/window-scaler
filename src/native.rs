@@ -56,6 +56,7 @@ pub struct Registry {
     counter: AtomicUsize,
     registered: std::sync::Mutex<HashSet<WindowId>>,
     verified_maxima: std::sync::Mutex<HashMap<WindowId, WindowGeometry>>,
+    hidden: std::sync::Mutex<HashMap<WindowId, HiddenWindow>>,
 }
 
 impl Registry {
@@ -72,6 +73,7 @@ impl Registry {
             counter: AtomicUsize::new(1),
             registered: Default::default(),
             verified_maxima: Default::default(),
+            hidden: Default::default(),
         }
     }
 
@@ -113,45 +115,56 @@ impl Registry {
             let window = handle as HWND;
             unsafe {
                 let mut pid = 0;
-                if IsWindowVisible(window) == 0
-                    || GetWindowThreadProcessId(window, &mut pid) == 0
-                    || pid == GetCurrentProcessId()
-                {
+                if GetWindowThreadProcessId(window, &mut pid) == 0 || pid == GetCurrentProcessId() {
                     continue;
                 }
+                let mut cookie = GetPropW(window, self.property.as_ptr()) as usize;
+                let managed = self.needs_show(WindowId {
+                    hwnd: handle,
+                    pid,
+                    cookie,
+                });
                 let extended = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
-                if extended & WS_EX_TOOLWINDOW != 0
-                    || (!GetWindow(window, GW_OWNER).is_null() && extended & WS_EX_APPWINDOW == 0)
+                if !managed
+                    && (IsWindowVisible(window) == 0
+                        || extended & WS_EX_TOOLWINDOW != 0
+                        || (!GetWindow(window, GW_OWNER).is_null()
+                            && extended & WS_EX_APPWINDOW == 0))
                 {
                     continue;
                 }
                 let mut cloaked: u32 = 0;
-                if DwmGetWindowAttribute(
-                    window,
-                    DWMWA_CLOAKED as u32,
-                    &mut cloaked as *mut _ as *mut c_void,
-                    size_of::<u32>() as u32,
-                ) >= 0
+                if !managed
+                    && DwmGetWindowAttribute(
+                        window,
+                        DWMWA_CLOAKED as u32,
+                        &mut cloaked as *mut _ as *mut c_void,
+                        size_of::<u32>() as u32,
+                    ) >= 0
                     && cloaked != 0
                 {
                     continue;
                 }
                 let class = window_class(window);
-                if matches!(
-                    class.as_str(),
-                    "Shell_TrayWnd"
-                        | "Shell_SecondaryTrayWnd"
-                        | "Progman"
-                        | "WorkerW"
-                        | "tooltips_class32"
-                ) {
+                if !managed
+                    && matches!(
+                        class.as_str(),
+                        "Shell_TrayWnd"
+                            | "Shell_SecondaryTrayWnd"
+                            | "Progman"
+                            | "WorkerW"
+                            | "tooltips_class32"
+                    )
+                {
                     continue;
                 }
-                let title = window_title(window);
+                let mut title = window_title(window);
                 if title.trim().is_empty() {
-                    continue;
+                    if !managed {
+                        continue;
+                    }
+                    title = "无标题窗口".into();
                 }
-                let mut cookie = GetPropW(window, self.property.as_ptr()) as usize;
                 let mut unavailable = None;
                 if cookie == 0 {
                     cookie = self.counter.fetch_add(1, Ordering::Relaxed);
@@ -177,6 +190,7 @@ impl Registry {
                     } else {
                         client_size(window).ok()
                     },
+                    hidden: IsWindowVisible(window) == 0,
                     unavailable,
                 });
             }
@@ -186,6 +200,7 @@ impl Registry {
             .lock()
             .unwrap()
             .retain(|id, _| self.valid(*id));
+        self.hidden.lock().unwrap().retain(|id, _| self.valid(*id));
         result.sort_by(|a, b| {
             a.program
                 .to_lowercase()
@@ -194,6 +209,112 @@ impl Registry {
                 .then(a.title.cmp(&b.title))
         });
         Ok(result)
+    }
+
+    pub fn needs_show(&self, id: WindowId) -> bool {
+        self.hidden.lock().unwrap().contains_key(&id)
+    }
+
+    pub fn is_hidden(&self, id: WindowId) -> bool {
+        self.valid(id) && unsafe { IsWindowVisible(hwnd(id)) == 0 }
+    }
+
+    pub fn hide(&self, id: WindowId) -> Result<(), String> {
+        let _dpi = DpiGuard::new();
+        self.require(id)?;
+        if !self.needs_show(id) {
+            if self.is_hidden(id) {
+                return Err("目标已被其他程序隐藏，未改变其状态".into());
+            }
+            let frame = window_frame(hwnd(id))?;
+            let mut placement = WINDOWPLACEMENT {
+                length: size_of::<WINDOWPLACEMENT>() as u32,
+                ..Default::default()
+            };
+            if unsafe { GetWindowPlacement(hwnd(id), &mut placement) } == 0 {
+                return Err(error("无法读取隐藏前的窗口状态"));
+            }
+            let state = unsafe { (IsIconic(hwnd(id)) != 0, IsZoomed(hwnd(id)) != 0) };
+            self.require(id)?;
+            // Record before submitting a synchronous request: a timed-out worker
+            // may still hide the target, so exit must retain its recovery entry.
+            self.hidden.lock().unwrap().insert(
+                id,
+                HiddenWindow {
+                    frame,
+                    placement,
+                    state,
+                    restore_started: false,
+                },
+            );
+        }
+        unsafe { ShowWindow(hwnd(id), SW_HIDE) };
+        std::thread::sleep(Duration::from_millis(120));
+        self.require(id)?;
+        if !self.is_hidden(id) {
+            return Err("目标未接受隐藏".into());
+        }
+        Ok(())
+    }
+
+    pub fn show(&self, id: WindowId) -> Result<(), String> {
+        let _dpi = DpiGuard::new();
+        self.require(id)?;
+        let saved = self.hidden.lock().unwrap().get(&id).copied();
+        let Some(saved) = saved else {
+            return if self.is_hidden(id) {
+                Err("目标不是由本工具隐藏，无法恢复隐藏前状态".into())
+            } else {
+                Ok(())
+            };
+        };
+        if !saved.restore_started && !self.is_hidden(id) {
+            // A target which has shown itself no longer needs our recovery.
+            // Do not move it back when the user clicks Show again.
+            self.hidden.lock().unwrap().remove(&id);
+            return Ok(());
+        }
+        if let Some(record) = self.hidden.lock().unwrap().get_mut(&id) {
+            // A failed restoration may leave a visible window at the wrong
+            // geometry. Keep that case retryable instead of accepting it as-is.
+            record.restore_started = true;
+        }
+        let frame = saved.frame;
+        let current_state = unsafe { (IsIconic(hwnd(id)) != 0, IsZoomed(hwnd(id)) != 0) };
+        if current_state != saved.state {
+            let mut placement = saved.placement;
+            // Keep cross-thread requests synchronous, like all other operations.
+            placement.flags &= !WPF_ASYNCWINDOWPLACEMENT;
+            self.require(id)?;
+            if unsafe { SetWindowPlacement(hwnd(id), &placement) } == 0 {
+                return Err(error("无法恢复隐藏前的窗口状态"));
+            }
+            self.require(id)?;
+        }
+        // WINDOWPLACEMENT uses workspace coordinates; only GetWindowRect's
+        // screen coordinates go to SetWindowPos. Avoid clamping small windows.
+        if unsafe {
+            SetWindowPos(
+                hwnd(id),
+                null_mut(),
+                frame[0],
+                frame[1],
+                frame[2] - frame[0],
+                frame[3] - frame[1],
+                SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+            )
+        } == 0
+        {
+            return Err(error("目标未接受显示"));
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        self.require(id)?;
+        let state = unsafe { (IsIconic(hwnd(id)) != 0, IsZoomed(hwnd(id)) != 0) };
+        if self.is_hidden(id) || window_frame(hwnd(id))? != frame || state != saved.state {
+            return Err("目标未保持显示状态或隐藏前的位置和大小".into());
+        }
+        self.hidden.lock().unwrap().remove(&id);
+        Ok(())
     }
 
     pub fn resize(
@@ -372,7 +493,16 @@ impl Registry {
             }
         }
         self.verified_maxima.lock().unwrap().clear();
+        self.hidden.lock().unwrap().clear();
     }
+}
+
+#[derive(Clone, Copy)]
+struct HiddenWindow {
+    frame: [i32; 4],
+    placement: WINDOWPLACEMENT,
+    state: (bool, bool),
+    restore_started: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -395,6 +525,14 @@ impl WindowGeometry {
             && self.client.height >= before.height
             && self.client != before
     }
+}
+
+fn window_frame(window: HWND) -> Result<[i32; 4], String> {
+    let mut frame = RECT::default();
+    if unsafe { GetWindowRect(window, &mut frame) } == 0 {
+        return Err(error("无法读取窗口边框"));
+    }
+    Ok([frame.left, frame.top, frame.right, frame.bottom])
 }
 
 fn window_geometry(window: HWND) -> Result<WindowGeometry, String> {

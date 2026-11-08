@@ -18,7 +18,7 @@ pub fn create(events: async_channel::Sender<Event>) -> anyhow::Result<TrayIcon> 
     }
     let menu = Menu::new();
     let open = MenuItem::new("显示主界面", true, None);
-    let exit = MenuItem::new("退出（先放大窗口）", true, None);
+    let exit = MenuItem::new("退出（先显示／放大）", true, None);
     menu.append_items(&[&open, &exit])?;
     #[cfg(test)]
     TEST_MENU.store(

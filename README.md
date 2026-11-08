@@ -1,24 +1,32 @@
 # 窗口缩放器
 
-Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗口尺寸。
+Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗口尺寸，并可隐藏或显示目标窗口。
+
+v0.2.0 提供双栏批量操作界面、当前列表全选，以及目标窗口隐藏/显示。版本变化见[更新记录](CHANGELOG.md)。升级前请从旧版正常退出，让它完成窗口恢复。
 
 ## 使用
 
-1. 双击 `WindowScaler.exe`，搜索并勾选需要调整的窗口。
-2. 输入目标内容区宽度（默认240像素），点击“缩小”。“放大”先尝试系统最大化；仍未实际变大时，恢复本次运行第一次缩小前的原尺寸。
-3. 关闭主界面后，左键单击托盘图标可重新打开；右键选择退出，会先放大本次缩过的窗口。
+1. 双击 `WindowScaler.exe`，在左侧搜索并勾选窗口；表头复选框可全选当前列表中的可操作窗口。
+2. 在右侧确认已选数量，输入目标内容区宽度（默认240像素），点击“缩小”。“放大”先尝试系统最大化；仍未实际变大时，恢复本次运行第一次缩小前的原尺寸。
+3. 右侧“隐藏”让已选窗口暂时不可见；它们仍保留在列表并标记“已隐藏”。“显示”恢复隐藏前的大小和位置。
+4. 关闭主界面后，左键单击托盘图标可重新打开；底部“正常退出”或托盘退出会显示本次隐藏的窗口，并放大本次缩过的窗口。
 
-过滤后仍保留勾选：按钮会操作全部已选窗口，包括被搜索条件隐藏的窗口。界面显示隐藏的已选数量。
+过滤后仍保留勾选：按钮会操作全部已选窗口，包括被搜索条件隐藏的窗口。右侧提示筛选外的已选数量；表头全选和取消全选仅影响当前列表。“清空勾选”清空全部选择。
+
+窗口列表与右侧操作面板独立滚动。长标题可悬停查看完整信息，操作结果保留在对应窗口行内。
 
 仅保存宽度，配置位于 `%LOCALAPPDATA%\WindowScaler\settings.json`。工具重开后搜索和勾选清空。
 
 原尺寸记录只在本次运行有效；若窗口在工具启动前就已经很小，工具不能推断之前的大小。回退成功会显示“已恢复原尺寸”，没有记录或恢复失败时会保留错误提示。
 
+“隐藏”不执行最小化，也不结束目标程序。“显示”保持隐藏前的普通、最大化或最小化状态；对隐藏窗口缩小或放大时会先显示。隐藏记录只在本次运行有效，工具重启后不能凭记录恢复此前隐藏的窗口。
+
 ## 兼容范围
 
 - 软件自行决定缩小后的内容布局，可能重排或裁切。工具不创建镜像、不修改游戏内鼠标坐标，也不承诺降低CPU、GPU或内存。
 - 无响应或权限不足的目标会显示失败，其他目标继续处理。窗口身份校验使用本次运行专用的临时窗口属性；窗口销毁后属性随之清除，避免句柄复用时误操作。
-- 退出放大失败时可重试，或选择“仍然退出”。强制结束、崩溃和系统关机不能保证完成放大。
+- 退出显示或放大失败时可重试，或选择“仍然退出”。强制结束、崩溃和系统关机不能保证显示隐藏窗口或完成放大。
+- 隐藏不保证目标程序继续渲染或维持后台速度，具体由目标程序决定。
 - 窗口操作在各自独立的工作线程顺序执行；结果不明确时不会向同一窗口继续提交操作。
 
 ## 构建
@@ -43,8 +51,8 @@ Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗�
 - 代码仓库：[Capsule7446/window-scaler](https://github.com/Capsule7446/window-scaler)
 - Ticket跟踪：[GitHub Issues](https://github.com/Capsule7446/window-scaler/issues)
 - [已确认规格](docs/spec.md) · [验证记录](docs/validation.md) · [任务跟踪规则](docs/agents/issue-tracker.md)
-- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。当前大功能为 [Epic #5](https://github.com/Capsule7446/window-scaler/issues/5)。
+- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。v0.2.0 集成[隐藏与显示](https://github.com/Capsule7446/window-scaler/issues/18)和[双栏界面](https://github.com/Capsule7446/window-scaler/issues/21)。
 
 `release/vX.Y.Z`会自动测试打包，合入master后由GitHub Actions自动打tag并发布ZIP、EXE和校验文件；正式包见 [GitHub Releases](https://github.com/Capsule7446/window-scaler/releases)。
 
-当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。正式发布由[版本验收 #4](https://github.com/Capsule7446/window-scaler/issues/4)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
+当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。v0.2.0 正式发布由[版本验收 #24](https://github.com/Capsule7446/window-scaler/issues/24)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。

@@ -36,7 +36,15 @@ fn main() {
             app::driver::run(args[2].clone());
         }
     } else {
-        for case in ["normal", "busy-retry", "force", "no-tray", "closed"] {
+        for case in [
+            "normal",
+            "busy-retry",
+            "force",
+            "no-tray",
+            "closed",
+            "visibility",
+            "select-list",
+        ] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--case", case])
                 .stdout(Stdio::piped())

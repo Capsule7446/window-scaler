@@ -14,7 +14,7 @@ $stage = Join-Path $outputRoot ('staging-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage 'WindowScaler.exe')
-    Copy-Item -LiteralPath README.md,GLOSSARY.md -Destination $stage
+    Copy-Item -LiteralPath README.md,GLOSSARY.md,CHANGELOG.md -Destination $stage
     Copy-Item -LiteralPath docs -Destination (Join-Path $stage 'docs') -Recurse
     $info = [ordered]@{version=$Version;commit=$commit.Trim();target='x86_64-pc-windows-msvc';created_utc=[DateTime]::UtcNow.ToString('o')}
     $info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage 'build-info.json') -Encoding utf8NoBOM
