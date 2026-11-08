@@ -1,6 +1,6 @@
 use crate::model::{Size, WindowId, WindowInfo, scaled_size};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::c_void,
     mem::size_of,
     ptr::null_mut,
@@ -55,6 +55,7 @@ pub struct Registry {
     property: Vec<u16>,
     counter: AtomicUsize,
     registered: std::sync::Mutex<HashSet<WindowId>>,
+    verified_maxima: std::sync::Mutex<HashMap<WindowId, WindowGeometry>>,
 }
 
 impl Registry {
@@ -70,6 +71,7 @@ impl Registry {
             )),
             counter: AtomicUsize::new(1),
             registered: Default::default(),
+            verified_maxima: Default::default(),
         }
     }
 
@@ -180,6 +182,10 @@ impl Registry {
             }
         }
         self.registered.lock().unwrap().retain(|id| self.valid(*id));
+        self.verified_maxima
+            .lock()
+            .unwrap()
+            .retain(|id, _| self.valid(*id));
         result.sort_by(|a, b| {
             a.program
                 .to_lowercase()
@@ -283,17 +289,73 @@ impl Registry {
         }
     }
 
+    pub fn restore_original(
+        &self,
+        id: WindowId,
+        original: Size,
+        affected: &AtomicBool,
+    ) -> Result<Size, String> {
+        let width = u32::try_from(original.width).map_err(|_| "原尺寸无效".to_owned())?;
+        self.resize(id, width, &mut Some(original), affected)
+    }
+
     pub fn maximize(&self, id: WindowId) -> Result<Size, String> {
         let _dpi = DpiGuard::new();
         self.require(id)?;
+        let window = hwnd(id);
+        let initial = if unsafe { IsIconic(window) } == 0 {
+            Some(window_geometry(window)?)
+        } else {
+            None
+        };
         unsafe {
-            ShowWindow(hwnd(id), SW_MAXIMIZE);
+            if IsIconic(window) != 0 {
+                SendMessageW(window, WM_SYSCOMMAND, SC_RESTORE as usize, 0);
+                std::thread::sleep(Duration::from_millis(120));
+                self.require(id)?;
+                if IsIconic(window) != 0 {
+                    return Err("目标未接受恢复显示".into());
+                }
+            }
+            if IsZoomed(window) != 0 {
+                let current = window_geometry(window)?;
+                let verified = self.verified_maxima.lock().unwrap().get(&id).copied();
+                if verified == Some(current) || current.covers_work_area() {
+                    return Ok(current.client);
+                }
+            }
+            // A stale WS_MAXIMIZE flag can coexist with a miniature frame.
+            // Use the target's system-command path, as its title-bar buttons do.
+            // Keep these calls synchronous on this window's dedicated worker.
+            if IsZoomed(window) != 0 {
+                self.require(id)?;
+                SendMessageW(window, WM_SYSCOMMAND, SC_RESTORE as usize, 0);
+                std::thread::sleep(Duration::from_millis(120));
+                self.require(id)?;
+                if IsIconic(window) != 0 || IsZoomed(window) != 0 {
+                    return Err("目标未接受还原显示，无法重新确认最大化".into());
+                }
+            }
+            let normal = client_size(window)?;
+            self.require(id)?;
+            SendMessageW(window, WM_SYSCOMMAND, SC_MAXIMIZE as usize, 0);
             std::thread::sleep(Duration::from_millis(120));
             self.require(id)?;
-            if IsZoomed(hwnd(id)) == 0 {
+            if IsIconic(window) != 0 || IsZoomed(window) == 0 {
                 return Err("目标未进入最大化状态".into());
             }
-            client_size(hwnd(id))
+            let actual = window_geometry(window)?;
+            if !actual.covers_work_area()
+                && !initial.is_some_and(|initial| actual.grew_from(initial.client))
+                && !actual.grew_from(normal)
+            {
+                return Err(format!(
+                    "目标报告最大化，但实际尺寸未变大（{}×{}）；请在目标程序内确认",
+                    actual.client.width, actual.client.height
+                ));
+            }
+            self.verified_maxima.lock().unwrap().insert(id, actual);
+            Ok(actual.client)
         }
     }
 
@@ -305,6 +367,56 @@ impl Registry {
                 }
             }
         }
+        self.verified_maxima.lock().unwrap().clear();
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WindowGeometry {
+    client: Size,
+    frame: [i32; 4],
+    work_area: [i32; 4],
+}
+
+impl WindowGeometry {
+    fn covers_work_area(self) -> bool {
+        self.frame[0] <= self.work_area[0]
+            && self.frame[1] <= self.work_area[1]
+            && self.frame[2] >= self.work_area[2]
+            && self.frame[3] >= self.work_area[3]
+    }
+
+    fn grew_from(self, before: Size) -> bool {
+        self.client.width >= before.width
+            && self.client.height >= before.height
+            && self.client != before
+    }
+}
+
+fn window_geometry(window: HWND) -> Result<WindowGeometry, String> {
+    unsafe {
+        let mut frame = RECT::default();
+        if GetWindowRect(window, &mut frame) == 0 {
+            return Err(error("无法读取窗口边框"));
+        }
+        let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return Err(error("无法读取显示器工作区"));
+        }
+        Ok(WindowGeometry {
+            client: client_size(window)?,
+            frame: [frame.left, frame.top, frame.right, frame.bottom],
+            work_area: [
+                info.rcWork.left,
+                info.rcWork.top,
+                info.rcWork.right,
+                info.rcWork.bottom,
+            ],
+        })
     }
 }
 

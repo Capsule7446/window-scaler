@@ -1,5 +1,5 @@
 use crate::{
-    backend::{Action, Backend, Event},
+    backend::{Action, AppliedChange, Backend, Event},
     model::{WindowId, WindowInfo, hidden_selected, valid_width},
     native, settings, tray,
 };
@@ -35,7 +35,6 @@ pub struct Scaler {
     exit_failed: bool,
     exit_requested: bool,
     exit_errors: Vec<String>,
-    last_action: Action,
     status: String,
     settings_path: PathBuf,
 }
@@ -125,7 +124,6 @@ impl Scaler {
             exit_failed: false,
             exit_requested: false,
             exit_errors: Vec::new(),
-            last_action: Action::Maximize,
             status: "正在读取桌面窗口…".into(),
             settings_path,
         }
@@ -156,7 +154,6 @@ impl Scaler {
             return;
         }
         self.busy = true;
-        self.last_action = action;
         self.exit_errors.clear();
         self.status = if exiting {
             "退出前正在放大本次缩过的窗口…".into()
@@ -192,17 +189,21 @@ impl Scaler {
                 let mut failed = 0;
                 for outcome in outcomes {
                     match outcome.result {
-                        Ok(size) => {
+                        Ok(change) => {
+                            let size = change.size();
                             if let Some(window) =
                                 self.windows.iter_mut().find(|w| w.id == outcome.id)
                             {
                                 window.size = Some(size);
                             }
-                            let message = match self.last_action {
-                                Action::Shrink(_) => {
+                            let message = match change {
+                                AppliedChange::Shrunk(_) => {
                                     format!("已缩小至 {}×{}", size.width, size.height)
                                 }
-                                Action::Maximize => "已最大化".into(),
+                                AppliedChange::Maximized(_) => "已最大化".into(),
+                                AppliedChange::RestoredOriginal(_) => {
+                                    format!("已恢复原尺寸 {}×{}", size.width, size.height)
+                                }
                             };
                             self.results.insert(outcome.id, (message, false));
                         }
