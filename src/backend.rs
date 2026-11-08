@@ -146,6 +146,7 @@ impl Backend {
                         .filter(|(_, w)| {
                             w.affected.load(Ordering::SeqCst)
                                 || w.pending_shrink.load(Ordering::SeqCst)
+                                || w.busy.load(Ordering::SeqCst)
                         })
                         .map(|(id, _)| *id)
                         .collect()
@@ -182,6 +183,16 @@ impl Backend {
                             id,
                             result: Err("先前操作尚未完成；未提交新请求，请稍后重试".into()),
                         });
+                        continue;
+                    }
+                    // Work can finish between collecting exit targets and
+                    // claiming this slot. An idle, never-modified target needs
+                    // no additional maximize operation merely to leave the app.
+                    if exiting
+                        && !worker.affected.load(Ordering::SeqCst)
+                        && !worker.pending_shrink.load(Ordering::SeqCst)
+                    {
+                        worker.busy.store(false, Ordering::SeqCst);
                         continue;
                     }
                     worker
