@@ -4,11 +4,27 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
 };
 
+// Instrument only test executables; the shipped application has no test hooks.
+#[cfg(test)]
+pub static TEST_MENU: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub static TEST_FAIL_CREATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub fn create(events: async_channel::Sender<Event>) -> anyhow::Result<TrayIcon> {
+    #[cfg(test)]
+    if TEST_FAIL_CREATION.load(std::sync::atomic::Ordering::SeqCst) {
+        anyhow::bail!("injected native tray creation failure");
+    }
     let menu = Menu::new();
     let open = MenuItem::new("显示主界面", true, None);
     let exit = MenuItem::new("退出（先放大窗口）", true, None);
     menu.append_items(&[&open, &exit])?;
+    #[cfg(test)]
+    TEST_MENU.store(
+        tray_icon::menu::ContextMenu::hpopupmenu(&menu) as usize,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     let open_id = open.id().clone();
     let exit_id = exit.id().clone();
     let menu_events = events.clone();

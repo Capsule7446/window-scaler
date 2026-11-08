@@ -22,7 +22,22 @@ pub enum Action {
 #[derive(Debug)]
 pub struct Outcome {
     pub id: WindowId,
-    pub result: Result<Size, String>,
+    pub result: Result<AppliedChange, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppliedChange {
+    Shrunk(Size),
+    Maximized(Size),
+    RestoredOriginal(Size),
+}
+
+impl AppliedChange {
+    pub fn size(self) -> Size {
+        match self {
+            Self::Shrunk(size) | Self::Maximized(size) | Self::RestoredOriginal(size) => size,
+        }
+    }
 }
 
 pub enum Event {
@@ -60,10 +75,21 @@ impl Worker {
                 let mut baseline = None;
                 while let Ok(job) = rx.recv() {
                     let result = match job.action {
-                        Action::Shrink(width) => {
-                            registry.resize(id, width, &mut baseline, &worker_affected)
-                        }
-                        Action::Maximize => registry.maximize(id),
+                        Action::Shrink(width) => registry
+                            .resize(id, width, &mut baseline, &worker_affected)
+                            .map(AppliedChange::Shrunk),
+                        Action::Maximize => match registry.maximize(id) {
+                            Ok(size) => Ok(AppliedChange::Maximized(size)),
+                            Err(maximize_error) => match baseline {
+                                Some(original) => registry
+                                    .restore_original(id, original, &worker_affected)
+                                    .map(AppliedChange::RestoredOriginal)
+                                    .map_err(|restore_error| {
+                                        format!("{maximize_error}；恢复原尺寸失败：{restore_error}")
+                                    }),
+                                None => Err(format!("{maximize_error}；本次运行没有原尺寸记录")),
+                            },
+                        },
                     };
                     worker_pending.store(false, Ordering::SeqCst);
                     worker_busy.store(false, Ordering::SeqCst);
@@ -120,6 +146,7 @@ impl Backend {
                         .filter(|(_, w)| {
                             w.affected.load(Ordering::SeqCst)
                                 || w.pending_shrink.load(Ordering::SeqCst)
+                                || w.busy.load(Ordering::SeqCst)
                         })
                         .map(|(id, _)| *id)
                         .collect()
@@ -156,6 +183,16 @@ impl Backend {
                             id,
                             result: Err("先前操作尚未完成；未提交新请求，请稍后重试".into()),
                         });
+                        continue;
+                    }
+                    // Work can finish between collecting exit targets and
+                    // claiming this slot. An idle, never-modified target needs
+                    // no additional maximize operation merely to leave the app.
+                    if exiting
+                        && !worker.affected.load(Ordering::SeqCst)
+                        && !worker.pending_shrink.load(Ordering::SeqCst)
+                    {
+                        worker.busy.store(false, Ordering::SeqCst);
                         continue;
                     }
                     worker
