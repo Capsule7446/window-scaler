@@ -11,6 +11,7 @@ const BLOCK_FIXTURE: u32 = WM_APP + 48;
 const CLAMP_CURRENT_MAX: isize = 1;
 const CUSTOM_MAX: isize = 2;
 const CUSTOM_SYSTEM_COMMAND: isize = 3;
+const REJECT_SHOW: isize = 4;
 static BLOCK_STARTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "system" fn fixture_proc(
@@ -20,6 +21,15 @@ unsafe extern "system" fn fixture_proc(
     l: LPARAM,
 ) -> LRESULT {
     match message {
+        WM_WINDOWPOSCHANGED => unsafe {
+            let result = DefWindowProcW(window, message, w, l);
+            if GetWindowLongPtrW(window, GWLP_USERDATA) == REJECT_SHOW
+                && IsWindowVisible(window) != 0
+            {
+                ShowWindow(window, SW_HIDE);
+            }
+            result
+        },
         WM_GETMINMAXINFO => {
             unsafe {
                 let info = &mut *(l as *mut MINMAXINFO);
@@ -285,7 +295,7 @@ fn exit_restores_original_size_when_system_maximize_stays_shrunken() {
     let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
         panic!("expected shrink result")
     };
-    let miniature = outcomes[0].result.as_ref().unwrap().size();
+    let miniature = outcomes[0].result.as_ref().unwrap().size().unwrap();
     assert_eq!(miniature.width, 240);
     unsafe { SetWindowLongPtrW(fixture.handle as HWND, GWLP_USERDATA, CLAMP_CURRENT_MAX) };
 
@@ -512,7 +522,7 @@ fn exit_reports_failure_when_original_size_no_longer_fits_the_work_area() {
     let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
         panic!("expected shrink result")
     };
-    let miniature = outcomes[0].result.as_ref().unwrap().size();
+    let miniature = outcomes[0].result.as_ref().unwrap().size().unwrap();
     unsafe { SetWindowLongPtrW(fixture.handle as HWND, GWLP_USERDATA, CLAMP_CURRENT_MAX) };
     backend.run(Vec::new(), Action::Maximize, true);
     let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
@@ -522,6 +532,209 @@ fn exit_reports_failure_when_original_size_no_longer_fits_the_work_area() {
     let error = outcomes[0].result.as_ref().unwrap_err();
     assert!(error.contains("恢复原尺寸失败") && error.contains("工作区"));
     assert_eq!(client_size(fixture.handle as HWND).unwrap(), miniature);
+}
+
+#[test]
+fn hidden_identity_cannot_transfer_its_show_or_exit_record() {
+    let fixture = Fixture::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let old = fixture.register(&backend.registry);
+    unsafe { ShowWindow(hwnd(old), SW_SHOWNOACTIVATE) };
+    backend.run(vec![old], Action::Hide, false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("hide")
+    };
+    assert!(outcomes[0].result.is_ok());
+    let new = fixture.register(&backend.registry);
+    assert!(!backend.registry.valid(old));
+    assert!(backend.registry.valid(new));
+    assert!(backend.registry.show(old).is_err());
+    assert!(
+        backend.registry.show(new).is_err(),
+        "a new identity has no recovery record"
+    );
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("exit")
+    };
+    assert!(outcomes.is_empty());
+    assert_eq!(unsafe { IsWindowVisible(hwnd(new)) }, 0);
+}
+
+#[test]
+fn rejected_show_remains_an_exit_failure_until_a_successful_retry() {
+    let fixture = Fixture::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let id = fixture.register(&backend.registry);
+    unsafe { ShowWindow(hwnd(id), SW_SHOWNOACTIVATE) };
+    backend.run(vec![id], Action::Hide, false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("hide")
+    };
+    assert!(outcomes[0].result.is_ok());
+    unsafe { SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, REJECT_SHOW) };
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("exit")
+    };
+    assert!(exiting);
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].result.as_ref().unwrap_err().contains("显示"));
+    assert_eq!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    unsafe { SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, 0) };
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("retry")
+    };
+    assert_eq!(outcomes[0].result.as_ref().unwrap(), &AppliedChange::Shown);
+    assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    assert_eq!(unsafe { IsZoomed(hwnd(id)) }, 0);
+}
+
+#[test]
+fn pending_visibility_request_blocks_exit_until_its_result_is_confirmed() {
+    for action in [Action::Hide, Action::Show] {
+        let fixture = Fixture::new();
+        let (tx, rx) = async_channel::unbounded();
+        let backend = Backend::new(tx);
+        let id = fixture.register(&backend.registry);
+        unsafe { ShowWindow(hwnd(id), SW_SHOWNOACTIVATE) };
+        if matches!(action, Action::Show) {
+            backend.run(vec![id], Action::Hide, false);
+            let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+                panic!("setup hide")
+            };
+            assert!(outcomes[0].result.is_ok());
+        }
+        BLOCK_STARTED.store(false, Ordering::SeqCst);
+        unsafe { PostMessageW(hwnd(id), BLOCK_FIXTURE, 0, 0) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !BLOCK_STARTED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        backend.run(vec![id], action, false);
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("visibility request")
+        };
+        assert!(outcomes[0].result.as_ref().unwrap_err().contains("超时"));
+        backend.run(Vec::new(), Action::Maximize, true);
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("pending exit")
+        };
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            outcomes[0]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .contains("尚未完成")
+        );
+        thread::sleep(Duration::from_secs(2));
+        backend.run(Vec::new(), Action::Maximize, true);
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("retry exit")
+        };
+        assert!(outcomes.iter().all(|outcome| outcome.result.is_ok()));
+        assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+        assert_eq!(unsafe { IsZoomed(hwnd(id)) }, 0);
+    }
+}
+
+#[test]
+fn repeated_hide_keeps_the_first_maximized_or_minimized_restore_state() {
+    let _dpi = DpiGuard::new();
+    for command in [SW_MAXIMIZE, SW_MINIMIZE] {
+        let fixture = Fixture::new();
+        let registry = Registry::new();
+        let id = fixture.register(&registry);
+        unsafe { ShowWindow(hwnd(id), command) };
+        let frame = window_frame(hwnd(id)).unwrap();
+        let state = unsafe { (IsIconic(hwnd(id)), IsZoomed(hwnd(id))) };
+        registry.hide(id).unwrap();
+        // A target can show or restore itself before the user hides it again.
+        unsafe { ShowWindow(hwnd(id), SW_RESTORE) };
+        registry.hide(id).unwrap();
+        registry.show(id).unwrap();
+        assert_eq!(unsafe { (IsIconic(hwnd(id)), IsZoomed(hwnd(id))) }, state);
+        assert_eq!(window_frame(hwnd(id)).unwrap(), frame);
+    }
+}
+
+#[test]
+fn exit_shows_hidden_targets_and_only_maximizes_shrunken_ones() {
+    let _dpi = DpiGuard::new();
+    let small = Fixture::new();
+    let untouched = Fixture::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let ids = [
+        small.register(&backend.registry),
+        untouched.register(&backend.registry),
+    ];
+    for id in ids {
+        unsafe { ShowWindow(hwnd(id), SW_SHOWNOACTIVATE) };
+    }
+    let untouched_frame = window_frame(untouched.handle as HWND).unwrap();
+    backend.run(vec![ids[0]], Action::Shrink(240), false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("shrink batch")
+    };
+    assert!(outcomes[0].result.is_ok());
+    backend.run(ids.to_vec(), Action::Hide, false);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("hide batch")
+    };
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.iter().all(|outcome| outcome.result.is_ok()));
+    for id in ids {
+        assert_eq!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    }
+
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("exit batch")
+    };
+    assert!(exiting);
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.iter().all(|outcome| outcome.result.is_ok()));
+    for id in ids {
+        assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    }
+    assert_ne!(unsafe { IsZoomed(small.handle as HWND) }, 0);
+    assert_eq!(unsafe { IsZoomed(untouched.handle as HWND) }, 0);
+    assert_eq!(
+        window_frame(untouched.handle as HWND).unwrap(),
+        untouched_frame
+    );
+}
+
+#[test]
+fn hide_show_preserves_shrunken_geometry_without_minimizing() {
+    let _dpi = DpiGuard::new();
+    let fixture = Fixture::new();
+    let registry = Registry::new();
+    let id = fixture.register(&registry);
+    unsafe { ShowWindow(fixture.handle as HWND, SW_SHOWNOACTIVATE) };
+    registry
+        .resize(id, 240, &mut None, &AtomicBool::new(false))
+        .unwrap();
+    let before = window_geometry(fixture.handle as HWND).unwrap();
+
+    registry.hide(id).unwrap();
+    registry.hide(id).unwrap();
+    assert_eq!(unsafe { IsWindowVisible(fixture.handle as HWND) }, 0);
+    assert_eq!(unsafe { IsIconic(fixture.handle as HWND) }, 0);
+
+    registry.show(id).unwrap();
+    registry.show(id).unwrap();
+    assert_ne!(unsafe { IsWindowVisible(fixture.handle as HWND) }, 0);
+    assert_eq!(unsafe { IsIconic(fixture.handle as HWND) }, 0);
+    let after = window_geometry(fixture.handle as HWND).unwrap();
+    assert_eq!(after.frame, before.frame);
+    assert_eq!(after.client, before.client);
 }
 
 /// Opt-in only: the caller must supply the exact live game process IDs. A
@@ -601,7 +814,7 @@ fn live_game_restore_acceptance() {
     }
     assert_eq!(restored.len(), ids.len());
     for outcome in restored {
-        let actual = outcome.result.unwrap().size();
+        let actual = outcome.result.unwrap().size().unwrap();
         assert!(actual.width >= 1280 && actual.height >= 720);
         assert_eq!(client_size(hwnd(outcome.id)).unwrap(), actual);
     }

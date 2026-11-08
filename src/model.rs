@@ -19,6 +19,7 @@ pub struct WindowInfo {
     pub title: String,
     pub program: String,
     pub size: Option<Size>,
+    pub hidden: bool,
     pub unavailable: Option<String>,
 }
 
@@ -109,6 +110,7 @@ mod tests {
             title: "星儿".into(),
             program: "LaTale.exe".into(),
             size: None,
+            hidden: false,
             unavailable: None,
         };
         let b = WindowInfo {
@@ -120,6 +122,7 @@ mod tests {
             title: "浏览器".into(),
             program: "Chrome.exe".into(),
             size: None,
+            hidden: false,
             unavailable: None,
         };
         let selection = HashSet::from([a.id, b.id]);

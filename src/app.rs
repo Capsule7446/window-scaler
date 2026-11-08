@@ -90,7 +90,7 @@ impl Scaler {
                 if this.tray.is_some() {
                     native::hide_main(this.hwnd);
                 } else {
-                    this.status = "托盘不可用；请点击“退出并放大窗口”正常退出".into();
+                    this.status = "托盘不可用；请点击“显示并放大后退出”正常退出".into();
                     cx.notify();
                 }
             });
@@ -143,7 +143,7 @@ impl Scaler {
         if exiting {
             self.exit_requested = true;
             if self.busy || self.refreshing {
-                self.status = "已收到退出请求，等待当前操作结束后放大窗口…".into();
+                self.status = "已收到退出请求，等待当前操作结束后显示并放大窗口…".into();
                 cx.notify();
                 return;
             }
@@ -156,7 +156,7 @@ impl Scaler {
         self.busy = true;
         self.exit_errors.clear();
         self.status = if exiting {
-            "退出前正在放大本次缩过的窗口…".into()
+            "退出前正在显示隐藏窗口，并放大本次缩过的窗口…".into()
         } else {
             format!("正在处理 {} 个已选窗口…", self.selected.len())
         };
@@ -188,22 +188,27 @@ impl Scaler {
                 let total = outcomes.len();
                 let mut failed = 0;
                 for outcome in outcomes {
+                    if let Some(window) = self.windows.iter_mut().find(|w| w.id == outcome.id) {
+                        window.hidden = self.backend.registry.is_hidden(outcome.id);
+                    }
                     match outcome.result {
                         Ok(change) => {
-                            let size = change.size();
-                            if let Some(window) =
-                                self.windows.iter_mut().find(|w| w.id == outcome.id)
+                            if let Some(size) = change.size()
+                                && let Some(window) =
+                                    self.windows.iter_mut().find(|w| w.id == outcome.id)
                             {
                                 window.size = Some(size);
                             }
                             let message = match change {
-                                AppliedChange::Shrunk(_) => {
+                                AppliedChange::Shrunk(size) => {
                                     format!("已缩小至 {}×{}", size.width, size.height)
                                 }
                                 AppliedChange::Maximized(_) => "已最大化".into(),
-                                AppliedChange::RestoredOriginal(_) => {
+                                AppliedChange::RestoredOriginal(size) => {
                                     format!("已恢复原尺寸 {}×{}", size.width, size.height)
                                 }
+                                AppliedChange::Hidden => "已隐藏".into(),
+                                AppliedChange::Shown => "已显示".into(),
                             };
                             self.results.insert(outcome.id, (message, false));
                         }
@@ -306,7 +311,11 @@ impl Render for Scaler {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_sm().text_ellipsis().child(w.title.clone()))
+                            .child(div().text_sm().text_ellipsis().child(if w.hidden {
+                                format!("{} · 已隐藏", w.title)
+                            } else {
+                                w.title.clone()
+                            }))
                             .child(
                                 div()
                                     .text_xs()
@@ -355,7 +364,7 @@ impl Render for Scaler {
                                 div()
                                     .text_sm()
                                     .text_color(muted)
-                                    .child("选择窗口，调整本体大小。"),
+                                    .child("选择窗口，调整大小或隐藏、显示。"),
                             ),
                     )
                     .child(div().text_xs().text_color(muted).child("Rust + GPUI Kit")),
@@ -473,6 +482,29 @@ impl Render for Scaler {
                             })),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().text_sm().child("窗口可见性"))
+                    .child(
+                        Button::new("hide")
+                            .label(format!("隐藏（{}）", self.selected.len()))
+                            .disabled(blocked || self.selected.is_empty())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.begin(Action::Hide, false, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("show")
+                            .label(format!("显示（{}）", self.selected.len()))
+                            .disabled(blocked || self.selected.is_empty())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.begin(Action::Show, false, cx)
+                            })),
+                    ),
+            )
             .when(width.is_none(), |root| {
                 root.child(
                     div()
@@ -485,7 +517,7 @@ impl Render for Scaler {
                 root.child(div().text_sm().text_color(rgb(0xb42318)).child(error))
                     .child(
                         Button::new("fallback-exit")
-                            .label("退出并放大窗口")
+                            .label("显示并放大后退出")
                             .disabled(self.busy)
                             .on_click(
                                 cx.listener(|this, _, _, cx| {
@@ -507,7 +539,7 @@ impl Render for Scaler {
                         .child(
                             div()
                                 .text_sm()
-                                .child("部分窗口尚未放大；未完成的请求仍可能继续生效。"),
+                                .child("部分窗口尚未完成显示或放大；未完成的请求仍可能继续生效。"),
                         )
                         .child(
                             div()
@@ -529,7 +561,7 @@ impl Render for Scaler {
                                 .child(
                                     Button::new("retry-exit")
                                         .primary()
-                                        .label("重试放大并退出")
+                                        .label("重试并退出")
                                         .disabled(self.busy)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.begin(Action::Maximize, true, cx)
@@ -552,7 +584,7 @@ impl Render for Scaler {
                     .text_xs()
                     .text_color(muted)
                     .child(self.status.clone())
-                    .child("关闭主界面会收起到托盘；从托盘退出时，放大本次缩过的窗口。"),
+                    .child("关闭主界面会收起到托盘；正常退出会显示本次隐藏的窗口，并放大本次缩过的窗口。"),
             )
     }
 }
