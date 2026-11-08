@@ -244,6 +244,7 @@ impl Registry {
                     frame,
                     placement,
                     state,
+                    restore_started: false,
                 },
             );
         }
@@ -267,6 +268,17 @@ impl Registry {
                 Ok(())
             };
         };
+        if !saved.restore_started && !self.is_hidden(id) {
+            // A target which has shown itself no longer needs our recovery.
+            // Do not move it back when the user clicks Show again.
+            self.hidden.lock().unwrap().remove(&id);
+            return Ok(());
+        }
+        if let Some(record) = self.hidden.lock().unwrap().get_mut(&id) {
+            // A failed restoration may leave a visible window at the wrong
+            // geometry. Keep that case retryable instead of accepting it as-is.
+            record.restore_started = true;
+        }
         let frame = saved.frame;
         let current_state = unsafe { (IsIconic(hwnd(id)) != 0, IsZoomed(hwnd(id)) != 0) };
         if current_state != saved.state {
@@ -490,6 +502,7 @@ struct HiddenWindow {
     frame: [i32; 4],
     placement: WINDOWPLACEMENT,
     state: (bool, bool),
+    restore_started: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -12,6 +12,7 @@ const CLAMP_CURRENT_MAX: isize = 1;
 const CUSTOM_MAX: isize = 2;
 const CUSTOM_SYSTEM_COMMAND: isize = 3;
 const REJECT_SHOW: isize = 4;
+const REJECT_SHOW_GEOMETRY: isize = 5;
 static BLOCK_STARTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "system" fn fixture_proc(
@@ -27,6 +28,23 @@ unsafe extern "system" fn fixture_proc(
                 && IsWindowVisible(window) != 0
             {
                 ShowWindow(window, SW_HIDE);
+            }
+            if GetWindowLongPtrW(window, GWLP_USERDATA) == REJECT_SHOW_GEOMETRY
+                && IsWindowVisible(window) != 0
+            {
+                let mut frame = RECT::default();
+                GetWindowRect(window, &mut frame);
+                if frame.right - frame.left != 900 {
+                    SetWindowPos(
+                        window,
+                        null_mut(),
+                        0,
+                        0,
+                        900,
+                        650,
+                        SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+                    );
+                }
             }
             result
         },
@@ -532,6 +550,52 @@ fn exit_reports_failure_when_original_size_no_longer_fits_the_work_area() {
     let error = outcomes[0].result.as_ref().unwrap_err();
     assert!(error.contains("恢复原尺寸失败") && error.contains("工作区"));
     assert_eq!(client_size(fixture.handle as HWND).unwrap(), miniature);
+}
+
+#[test]
+fn failed_visible_show_can_retry_the_hidden_geometry() {
+    let _dpi = DpiGuard::new();
+    let fixture = Fixture::new();
+    let registry = Registry::new();
+    let id = fixture.register(&registry);
+    unsafe { ShowWindow(hwnd(id), SW_SHOWNOACTIVATE) };
+    let original = window_frame(hwnd(id)).unwrap();
+    registry.hide(id).unwrap();
+    unsafe { SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, REJECT_SHOW_GEOMETRY) };
+    assert!(registry.show(id).is_err());
+    assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    assert_ne!(window_frame(hwnd(id)).unwrap(), original);
+    unsafe { SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, 0) };
+    registry.show(id).unwrap();
+    assert_eq!(window_frame(hwnd(id)).unwrap(), original);
+}
+
+#[test]
+fn show_keeps_a_targets_current_geometry_after_it_has_shown_itself() {
+    let _dpi = DpiGuard::new();
+    let fixture = Fixture::new();
+    let registry = Registry::new();
+    let id = fixture.register(&registry);
+    unsafe { ShowWindow(hwnd(id), SW_SHOWNOACTIVATE) };
+    registry.hide(id).unwrap();
+    unsafe {
+        assert_ne!(
+            SetWindowPos(
+                hwnd(id),
+                null_mut(),
+                120,
+                140,
+                850,
+                600,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING
+            ),
+            0
+        );
+    }
+    let current = window_frame(hwnd(id)).unwrap();
+    registry.show(id).unwrap();
+    assert_eq!(window_frame(hwnd(id)).unwrap(), current);
+    assert!(!registry.needs_show(id));
 }
 
 #[test]
