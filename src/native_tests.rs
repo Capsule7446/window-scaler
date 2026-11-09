@@ -13,6 +13,7 @@ const CUSTOM_MAX: isize = 2;
 const CUSTOM_SYSTEM_COMMAND: isize = 3;
 const REJECT_SHOW: isize = 4;
 const REJECT_SHOW_GEOMETRY: isize = 5;
+const REJECT_MOVE: isize = 6;
 static BLOCK_STARTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "system" fn fixture_proc(
@@ -24,6 +25,21 @@ unsafe extern "system" fn fixture_proc(
     match message {
         WM_WINDOWPOSCHANGED => unsafe {
             let result = DefWindowProcW(window, message, w, l);
+            if GetWindowLongPtrW(window, GWLP_USERDATA) == REJECT_MOVE {
+                let mut frame = RECT::default();
+                GetWindowRect(window, &mut frame);
+                if frame.left != 120 || frame.top != 120 {
+                    SetWindowPos(
+                        window,
+                        null_mut(),
+                        120,
+                        120,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+                    );
+                }
+            }
             if GetWindowLongPtrW(window, GWLP_USERDATA) == REJECT_SHOW
                 && IsWindowVisible(window) != 0
             {
@@ -176,6 +192,552 @@ impl Drop for Fixture {
         }
         self.thread.take().unwrap().join().unwrap();
     }
+}
+
+fn tiling_fixture(backend: &Backend, width: i32, height: i32) -> (Fixture, WindowId) {
+    let fixture = Fixture::new();
+    let id = fixture.register(&backend.registry);
+    unsafe {
+        SetWindowPos(
+            hwnd(id),
+            null_mut(),
+            120,
+            120,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+        );
+    }
+    (fixture, id)
+}
+
+#[test]
+fn tiling_keeps_hidden_records_when_a_self_shown_special_state_is_skipped() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_fixture, id) = tiling_fixture(&backend, 240, 160);
+    let original = window_frame(hwnd(id)).unwrap();
+    for state in [SW_MAXIMIZE, SW_SHOWMINNOACTIVE] {
+        backend.registry.hide(id).unwrap();
+        unsafe {
+            ShowWindow(hwnd(id), state);
+        }
+        backend.tile(
+            vec![id],
+            Rect {
+                left: 80,
+                top: 80,
+                right: 680,
+                bottom: 580,
+            },
+            TilingOptions {
+                corner: Corner::TopLeft,
+                direction: Direction::Horizontal,
+                gap: 8,
+            },
+        );
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("batch")
+        };
+        assert!(outcomes[0].result.is_err());
+        assert!(
+            backend.registry.needs_show(id),
+            "skipping a special state must not discard its hidden record"
+        );
+        backend.registry.hide(id).unwrap();
+        backend.registry.show(id).unwrap();
+        assert_eq!(window_frame(hwnd(id)).unwrap(), original);
+        assert_eq!(unsafe { IsZoomed(hwnd(id)) | IsIconic(hwnd(id)) }, 0);
+    }
+}
+
+#[test]
+fn tiling_accepts_self_shown_windows_but_keeps_failed_show_recovery_pending() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_fixture, id) = tiling_fixture(&backend, 240, 160);
+    backend.registry.hide(id).unwrap();
+    unsafe {
+        ShowWindow(hwnd(id), SW_SHOWNOACTIVATE);
+    }
+    let area = Rect {
+        left: 80,
+        top: 80,
+        right: 680,
+        bottom: 580,
+    };
+    let options = TilingOptions {
+        corner: Corner::TopLeft,
+        direction: Direction::Horizontal,
+        gap: 8,
+    };
+    backend.tile(vec![id], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.is_ok(), "{outcomes:?}");
+    assert_eq!(window_frame(hwnd(id)).unwrap(), [80, 80, 320, 240]);
+    backend.registry.hide(id).unwrap();
+    backend.registry.show(id).unwrap();
+    assert_eq!(
+        window_frame(hwnd(id)).unwrap(),
+        [80, 80, 320, 240],
+        "new hide must not reuse an obsolete frame"
+    );
+    backend.registry.hide(id).unwrap();
+    unsafe {
+        SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, REJECT_SHOW_GEOMETRY);
+    }
+    assert!(backend.registry.show(id).is_err());
+    assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    let pending_frame = window_frame(hwnd(id)).unwrap();
+    backend.tile(vec![id], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.as_ref().unwrap_err().contains("显示"));
+    assert_eq!(window_frame(hwnd(id)).unwrap(), pending_frame);
+    assert!(backend.registry.needs_show(id));
+    unsafe {
+        SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, 0);
+    }
+    backend.registry.show(id).unwrap();
+}
+
+#[test]
+fn tiling_reports_stale_geometry_and_refused_moves_without_stopping_other_targets() {
+    use crate::layout::{Corner, Direction, Position, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_first, a) = tiling_fixture(&backend, 240, 160);
+    let (_second, b) = tiling_fixture(&backend, 240, 160);
+    let snapshot = backend.registry.measure_tiling(a).unwrap();
+    unsafe {
+        SetWindowPos(
+            hwnd(a),
+            null_mut(),
+            180,
+            180,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+    assert!(
+        backend
+            .registry
+            .move_tiled(a, snapshot, Position { x: 80, y: 80 })
+            .unwrap_err()
+            .contains("已改变")
+    );
+    assert_eq!(window_frame(hwnd(a)).unwrap(), [180, 180, 420, 340]);
+    unsafe {
+        SetWindowPos(
+            hwnd(a),
+            null_mut(),
+            120,
+            120,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+        SetWindowLongPtrW(hwnd(a), GWLP_USERDATA, REJECT_MOVE);
+    }
+    backend.tile(
+        vec![a, b],
+        Rect {
+            left: 80,
+            top: 80,
+            right: 680,
+            bottom: 580,
+        },
+        TilingOptions {
+            corner: Corner::TopLeft,
+            direction: Direction::Horizontal,
+            gap: 8,
+        },
+    );
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(
+        outcomes
+            .iter()
+            .find(|o| o.id == a)
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap_err()
+            .contains("未保持")
+    );
+    assert!(outcomes.iter().find(|o| o.id == b).unwrap().result.is_ok());
+    assert_eq!(window_frame(hwnd(a)).unwrap(), [120, 120, 360, 280]);
+    assert_eq!(window_frame(hwnd(b)).unwrap(), [328, 80, 568, 240]);
+}
+
+#[test]
+fn tiling_timeout_keeps_the_window_reserved_until_the_move_finishes() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_first, a) = tiling_fixture(&backend, 240, 160);
+    let (_second, b) = tiling_fixture(&backend, 240, 160);
+    BLOCK_STARTED.store(false, Ordering::SeqCst);
+    unsafe {
+        PostMessageW(hwnd(a), BLOCK_FIXTURE, 0, 0);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !BLOCK_STARTED.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let area = Rect {
+        left: 80,
+        top: 80,
+        right: 680,
+        bottom: 580,
+    };
+    let options = TilingOptions {
+        corner: Corner::TopLeft,
+        direction: Direction::Horizontal,
+        gap: 8,
+    };
+    backend.tile(vec![a, b], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(
+        outcomes
+            .iter()
+            .find(|o| o.id == a)
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap_err()
+            .contains("超时")
+    );
+    assert!(outcomes.iter().find(|o| o.id == b).unwrap().result.is_ok());
+    backend.tile(vec![a], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(
+        outcomes[0]
+            .result
+            .as_ref()
+            .unwrap_err()
+            .contains("尚未完成")
+    );
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(exiting && outcomes[0].result.is_err());
+    thread::sleep(Duration::from_secs(2));
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(exiting && outcomes.is_empty());
+    assert_eq!(window_frame(hwnd(a)).unwrap(), [80, 80, 320, 240]);
+}
+
+#[test]
+fn tiling_four_corners_and_both_directions_keep_list_order_and_size() {
+    use crate::layout::{Corner::*, Direction::*, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let fixtures = [
+        tiling_fixture(&backend, 280, 160),
+        tiling_fixture(&backend, 230, 200),
+        tiling_fixture(&backend, 340, 180),
+    ];
+    let ids: Vec<_> = fixtures.iter().map(|(_, id)| *id).collect();
+    let clients: Vec<_> = ids
+        .iter()
+        .map(|id| client_size(hwnd(*id)).unwrap())
+        .collect();
+    // Literal examples for a 700 x 500 work area. Unequal windows force wraps.
+    for (corner, direction, expected) in [
+        (TopLeft, Horizontal, [[100, 100], [390, 100], [100, 310]]),
+        (TopRight, Horizontal, [[520, 100], [280, 100], [460, 310]]),
+        (BottomLeft, Horizontal, [[100, 440], [390, 400], [100, 210]]),
+        (
+            BottomRight,
+            Horizontal,
+            [[520, 440], [280, 400], [460, 210]],
+        ),
+        (TopLeft, Vertical, [[100, 100], [100, 270], [390, 100]]),
+        (TopRight, Vertical, [[520, 100], [570, 270], [170, 100]]),
+        (BottomLeft, Vertical, [[100, 440], [100, 230], [390, 420]]),
+        (BottomRight, Vertical, [[520, 440], [570, 230], [170, 420]]),
+    ] {
+        backend.tile(
+            ids.clone(),
+            Rect {
+                left: 100,
+                top: 100,
+                right: 800,
+                bottom: 600,
+            },
+            TilingOptions {
+                corner,
+                direction,
+                gap: 10,
+            },
+        );
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("batch")
+        };
+        assert!(
+            outcomes.iter().all(|o| o.result.is_ok()),
+            "{corner:?} {direction:?}: {outcomes:?}"
+        );
+        for ((id, position), client) in ids.iter().zip(expected).zip(&clients) {
+            let frame = window_frame(hwnd(*id)).unwrap();
+            assert_eq!([frame[0], frame[1]], position, "{corner:?} {direction:?}");
+            assert_eq!(client_size(hwnd(*id)).unwrap(), *client);
+        }
+    }
+}
+
+#[test]
+fn tiling_preflight_leaves_every_window_untouched_when_layout_cannot_fit() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let fixtures = [
+        tiling_fixture(&backend, 280, 160),
+        tiling_fixture(&backend, 230, 200),
+    ];
+    let ids: Vec<_> = fixtures.iter().map(|(_, id)| *id).collect();
+    let before: Vec<_> = ids
+        .iter()
+        .map(|id| window_frame(hwnd(*id)).unwrap())
+        .collect();
+    for (area, gap) in [
+        (
+            Rect {
+                left: 0,
+                top: 0,
+                right: 500,
+                bottom: 200,
+            },
+            10,
+        ),
+        (
+            Rect {
+                left: 0,
+                top: 0,
+                right: 250,
+                bottom: 800,
+            },
+            0,
+        ),
+        (
+            Rect {
+                left: 0,
+                top: 0,
+                right: 600,
+                bottom: 400,
+            },
+            u32::MAX,
+        ),
+        (
+            Rect {
+                left: i32::MIN,
+                top: 0,
+                right: i32::MAX,
+                bottom: 400,
+            },
+            0,
+        ),
+    ] {
+        backend.tile(
+            ids.clone(),
+            area,
+            TilingOptions {
+                corner: Corner::TopLeft,
+                direction: Direction::Horizontal,
+                gap,
+            },
+        );
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("batch")
+        };
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| o.result.is_err()));
+        assert_eq!(
+            ids.iter()
+                .map(|id| window_frame(hwnd(*id)).unwrap())
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+    // A rejected batch releases its reservation. Zero gap means touching frames.
+    backend.tile(
+        ids.clone(),
+        Rect {
+            left: -600,
+            top: 80,
+            right: 0,
+            bottom: 480,
+        },
+        TilingOptions {
+            corner: Corner::TopLeft,
+            direction: Direction::Horizontal,
+            gap: 0,
+        },
+    );
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes.iter().all(|o| o.result.is_ok()), "{outcomes:?}");
+    assert_eq!(window_frame(hwnd(ids[0])).unwrap(), [-600, 80, -320, 240]);
+    assert_eq!(window_frame(hwnd(ids[1])).unwrap(), [-320, 80, -90, 280]);
+}
+
+#[test]
+fn tiling_skips_special_states_without_restoring_or_showing_them() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let fixtures: Vec<_> = (0..5).map(|_| tiling_fixture(&backend, 240, 160)).collect();
+    let ids: Vec<_> = fixtures.iter().map(|(_, id)| *id).collect();
+    backend.registry.hide(ids[1]).unwrap();
+    unsafe {
+        ShowWindow(hwnd(ids[2]), SW_MINIMIZE);
+        ShowWindow(hwnd(ids[3]), SW_MAXIMIZE);
+    }
+    unsafe {
+        RemovePropW(hwnd(ids[4]), backend.registry.property.as_ptr());
+    }
+    let before: Vec<_> = ids
+        .iter()
+        .map(|id| window_frame(hwnd(*id)).unwrap())
+        .collect();
+    backend.tile(
+        ids.clone(),
+        Rect {
+            left: 80,
+            top: 80,
+            right: 680,
+            bottom: 580,
+        },
+        TilingOptions {
+            corner: Corner::TopLeft,
+            direction: Direction::Horizontal,
+            gap: 8,
+        },
+    );
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert_eq!(outcomes.len(), 5);
+    assert!(
+        outcomes
+            .iter()
+            .find(|o| o.id == ids[0])
+            .unwrap()
+            .result
+            .is_ok()
+    );
+    assert!(
+        outcomes
+            .iter()
+            .filter(|o| o.id != ids[0])
+            .all(|o| o.result.is_err())
+    );
+    assert_eq!(window_frame(hwnd(ids[0])).unwrap(), [80, 80, 320, 240]);
+    for (id, old) in ids.iter().zip(before).skip(1) {
+        assert_eq!(window_frame(hwnd(*id)).unwrap(), old);
+    }
+    assert_eq!(unsafe { IsWindowVisible(hwnd(ids[1])) }, 0);
+    assert_ne!(unsafe { IsIconic(hwnd(ids[2])) }, 0);
+    assert_ne!(unsafe { IsZoomed(hwnd(ids[3])) }, 0);
+    assert!(backend.registry.needs_show(ids[1]));
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].id, ids[1]);
+    assert!(outcomes[0].result.is_ok());
+}
+
+#[test]
+fn tiling_preserves_sizes_wraps_rows_and_does_not_add_exit_resize() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let fixtures = [Fixture::new(), Fixture::new(), Fixture::new()];
+    let sizes = [(280, 160), (230, 200), (340, 180)];
+    let ids: Vec<_> = fixtures
+        .iter()
+        .map(|f| f.register(&backend.registry))
+        .collect();
+    for (id, (width, height)) in ids.iter().zip(sizes) {
+        unsafe {
+            SetWindowPos(
+                hwnd(*id),
+                null_mut(),
+                90,
+                90,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+            );
+        }
+    }
+    let clients: Vec<_> = ids
+        .iter()
+        .map(|id| client_size(hwnd(*id)).unwrap())
+        .collect();
+    backend.tile(
+        ids.clone(),
+        Rect {
+            left: 80,
+            top: 80,
+            right: 680,
+            bottom: 580,
+        },
+        TilingOptions {
+            corner: Corner::TopLeft,
+            direction: Direction::Horizontal,
+            gap: 10,
+        },
+    );
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(!exiting);
+    assert_eq!(outcomes.len(), 3);
+    assert!(outcomes.iter().all(|o| o.result.is_ok()), "{outcomes:?}");
+    for (id, expected) in
+        ids.iter()
+            .zip([[80, 80, 360, 240], [370, 80, 600, 280], [80, 290, 420, 470]])
+    {
+        assert_eq!(window_frame(hwnd(*id)).unwrap(), expected);
+    }
+    for (id, before) in ids.iter().zip(clients) {
+        assert_eq!(client_size(hwnd(*id)).unwrap(), before);
+    }
+    backend.run(Vec::new(), Action::Maximize, true);
+    let Event::Batch { outcomes, exiting } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(exiting && outcomes.is_empty());
+    assert_eq!(window_frame(hwnd(ids[0])).unwrap(), [80, 80, 360, 240]);
 }
 
 #[test]

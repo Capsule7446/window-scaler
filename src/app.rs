@@ -1,5 +1,6 @@
 use crate::{
     backend::{Action, AppliedChange, Backend, Event},
+    layout::{Corner, Direction, TilingOptions, valid_gap},
     model::{WindowId, WindowInfo, hidden_selected, valid_width},
     native, settings, tray,
 };
@@ -25,6 +26,10 @@ pub struct Scaler {
     results: HashMap<WindowId, (String, bool)>,
     search: Entity<InputState>,
     width: Entity<InputState>,
+    gap: Entity<InputState>,
+    panel: OperationPanel,
+    corner: Corner,
+    direction: Direction,
     _subscriptions: Vec<Subscription>,
     _event_task: Task<()>,
     tray: Option<tray_icon::TrayIcon>,
@@ -37,6 +42,12 @@ pub struct Scaler {
     exit_errors: Vec<String>,
     status: String,
     settings_path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OperationPanel {
+    Scaling,
+    Tiling,
 }
 
 impl Scaler {
@@ -57,7 +68,13 @@ impl Scaler {
             cx.new(|cx| InputState::new(window, cx).placeholder("搜索窗口标题、程序名或 PID"));
         let width =
             cx.new(|cx| InputState::new(window, cx).default_value(initial_width.to_string()));
+        let gap = cx.new(|cx| InputState::new(window, cx).default_value("8"));
         let subscriptions = vec![
+            cx.subscribe_in(&gap, window, |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&search, window, |_, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -115,6 +132,10 @@ impl Scaler {
             results: HashMap::new(),
             search,
             width,
+            gap,
+            panel: OperationPanel::Scaling,
+            corner: Corner::TopLeft,
+            direction: Direction::Horizontal,
             _subscriptions: subscriptions,
             _event_task: task,
             tray,
@@ -166,6 +187,44 @@ impl Scaler {
         cx.notify();
     }
 
+    fn begin_tiling(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.refreshing || self.exit_requested || self.selected.is_empty() {
+            return;
+        }
+        let Some(gap) = valid_gap(&self.gap.read(cx).value()) else {
+            self.status = "排列间隔请输入 0 至 2147483647 的整数".into();
+            cx.notify();
+            return;
+        };
+        let area = match native::work_area(self.hwnd) {
+            Ok(area) => area,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
+        let selected: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|entry| self.selected.contains(&entry.id))
+            .map(|entry| entry.id)
+            .collect();
+        self.busy = true;
+        self.exit_errors.clear();
+        self.status = format!("正在排列 {} 个已选窗口…", selected.len());
+        self.backend.tile(
+            selected,
+            area,
+            TilingOptions {
+                corner: self.corner,
+                direction: self.direction,
+                gap,
+            },
+        );
+        cx.notify();
+    }
+
     fn handle_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Windows(result) => {
@@ -210,6 +269,7 @@ impl Scaler {
                                 }
                                 AppliedChange::Hidden => "已隐藏".into(),
                                 AppliedChange::Shown => "已显示".into(),
+                                AppliedChange::Tiled(_) => "已排列，大小不变".into(),
                             };
                             self.results.insert(outcome.id, (message, false));
                         }

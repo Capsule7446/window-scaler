@@ -131,6 +131,87 @@ async fn drive(
         })
     })?;
     pause(cx, 100).await;
+    if case == "tiling" {
+        let initial_sizes = [(300, 180), (260, 160)];
+        for (handle, (width, height)) in handles.iter().zip(initial_sizes) {
+            unsafe {
+                SetWindowPos(
+                    *handle as HWND,
+                    std::ptr::null_mut(),
+                    120,
+                    120,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+                );
+            }
+        }
+        let before: Vec<_> = handles.iter().map(|h| fixture::frame(*h)).collect();
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.panel = OperationPanel::Tiling;
+                view.corner = crate::layout::Corner::BottomRight;
+                view.direction = crate::layout::Direction::Vertical;
+                view.width
+                    .update(cx, |input, cx| input.set_value("invalid", window, cx));
+                for invalid in ["", "-1", "1.5", "+1", "2147483648", "4294967296"] {
+                    view.gap
+                        .update(cx, |input, cx| input.set_value(invalid, window, cx));
+                    view.begin_tiling(cx);
+                    assert!(
+                        !view.busy,
+                        "invalid gap must not start an operation: {invalid}"
+                    );
+                }
+            });
+            window.draw(cx).clear(cx);
+        })?;
+        assert_eq!(
+            handles
+                .iter()
+                .map(|h| fixture::frame(*h))
+                .collect::<Vec<_>>(),
+            before
+        );
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.gap
+                    .update(cx, |input, cx| input.set_value("12", window, cx));
+                assert_eq!(
+                    hidden_selected(&view.windows, &view.selected, &view.search.read(cx).value()),
+                    1
+                );
+                view.begin_tiling(cx);
+            });
+        })?;
+        wait(view, cx, |view| !view.busy, "independent tiling").await?;
+        view.update(cx, |view, _| {
+            assert_eq!(view.selected.len(), 2);
+            assert!(
+                view.selected
+                    .iter()
+                    .all(|id| view.results[id].0 == "已排列，大小不变" && !view.results[id].1)
+            );
+            assert_eq!(view.panel, OperationPanel::Tiling);
+        });
+        let area = native::work_area(hwnd).map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            fixture::frame(handles[0]),
+            [area.right - 300, area.bottom - 180, area.right, area.bottom]
+        );
+        assert_eq!(
+            fixture::frame(handles[1]),
+            [
+                area.right - 260,
+                area.bottom - 352,
+                area.right,
+                area.bottom - 192
+            ]
+        );
+        ready.store(true, Ordering::SeqCst);
+        view.update(cx, |view, cx| view.begin(Action::Maximize, true, cx));
+        return Ok(());
+    }
     if case == "select-list" {
         view.update(cx, |view, cx| {
             view.selected.clear();
@@ -494,7 +575,16 @@ pub fn run(case: String) {
             continue;
         }
         let size = fixture::size(*handle);
-        if case == "force" && index == 0 {
+        if case == "tiling" {
+            let frame = fixture::frame(*handle);
+            let expected = [(300, 180), (260, 160)][index];
+            assert_eq!(
+                (frame[2] - frame[0], frame[3] - frame[1]),
+                expected,
+                "exit must not resize tiled windows"
+            );
+            assert_eq!(unsafe { IsZoomed(*handle as HWND) }, 0);
+        } else if case == "force" && index == 0 {
             assert_eq!(size.width, 240);
         } else {
             assert!(

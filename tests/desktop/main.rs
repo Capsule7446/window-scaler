@@ -6,6 +6,8 @@ mod app;
 #[path = "../../src/backend.rs"]
 mod backend;
 mod fixture;
+#[path = "../../src/layout.rs"]
+mod layout;
 #[path = "../../src/model.rs"]
 mod model;
 #[path = "../../src/native.rs"]
@@ -44,6 +46,7 @@ fn main() {
             "closed",
             "visibility",
             "select-list",
+            "tiling",
         ] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--case", case])
