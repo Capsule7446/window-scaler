@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod layout;
 mod model;
 mod native;
 mod settings;

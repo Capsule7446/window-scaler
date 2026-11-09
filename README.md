@@ -1,21 +1,26 @@
 # 窗口缩放器
 
-Windows独立工具，使用Rust + GPUI Kit。直接修改目标程序的原窗口尺寸，并可隐藏或显示目标窗口。
+Windows独立工具，使用Rust + GPUI Kit。支持多选窗口缩放/恢复、独立窗口排列，以及隐藏/显示。
 
-v0.2.0 提供双栏批量操作界面、当前列表全选，以及目标窗口隐藏/显示。版本变化见[更新记录](CHANGELOG.md)。升级前请从旧版正常退出，让它完成窗口恢复。
+v0.3.0 新增独立窗口排列：四角起点、水平/垂直平铺、像素间隔及自动换行/列，保持窗口当前大小。保留双栏界面和既有缩放、隐藏/显示功能。版本变化见[更新记录](CHANGELOG.md)。升级前请从旧版正常退出，让它完成窗口恢复。
 
 ## 使用
 
 1. 双击 `WindowScaler.exe`，在左侧搜索并勾选窗口；表头复选框可全选当前列表中的可操作窗口。
 2. 在右侧确认已选数量，输入目标内容区宽度（默认240像素），点击“缩小”。“放大”先尝试系统最大化；仍未实际变大时，恢复本次运行第一次缩小前的原尺寸。
 3. 右侧“隐藏”让已选窗口暂时不可见；它们仍保留在列表并标记“已隐藏”。“显示”恢复隐藏前的大小和位置。
-4. 关闭主界面后，左键单击托盘图标可重新打开；底部“正常退出”或托盘退出会显示本次隐藏的窗口，并放大本次缩过的窗口。
+4. 切换右侧“窗口排列”，选择四角起点、水平或垂直平铺、窗口间隔，点击“一键平铺”。排列保持当前大小，放不下一行/列时自动换行/列；整体空间不足时不移动，需先手动缩小、减少选择或减小间隔。
+5. 关闭主界面后，左键单击托盘图标可重新打开；底部“正常退出”或托盘退出会显示本次隐藏的窗口，并放大本次缩过的窗口。
 
 过滤后仍保留勾选：按钮会操作全部已选窗口，包括被搜索条件隐藏的窗口。右侧提示筛选外的已选数量；表头全选和取消全选仅影响当前列表。“清空勾选”清空全部选择。
 
 窗口列表与右侧操作面板独立滚动。长标题可悬停查看完整信息，操作结果保留在对应窗口行内。
 
 仅保存宽度，配置位于 `%LOCALAPPDATA%\WindowScaler\settings.json`。工具重开后搜索和勾选清空。
+
+“缩放/恢复”和“窗口排列”是独立功能，共用多选列表。排列按完整列表顺序在工具所在屏幕的工作区执行，间隔采用包含标题栏及边框的系统外框像素，支持 0；不可见的系统调整边框可能使可见间距略大。默认左上、水平、8 px，排列选项不跨重启保存。
+
+排列不自动显示、缩小或恢复窗口状态；隐藏、最小化或最大化窗口会提示先手动显示或恢复为普通窗口，其他可操作目标继续。仅排列过的窗口在退出时保持位置和大小，原有已缩小或已隐藏窗口仍遵循既有退出恢复规则。
 
 原尺寸记录只在本次运行有效；若窗口在工具启动前就已经很小，工具不能推断之前的大小。回退成功会显示“已恢复原尺寸”，没有记录或恢复失败时会保留错误提示。
 
@@ -51,8 +56,8 @@ v0.2.0 提供双栏批量操作界面、当前列表全选，以及目标窗口�
 - 代码仓库：[Capsule7446/window-scaler](https://github.com/Capsule7446/window-scaler)
 - Ticket跟踪：[GitHub Issues](https://github.com/Capsule7446/window-scaler/issues)
 - [已确认规格](docs/spec.md) · [验证记录](docs/validation.md) · [任务跟踪规则](docs/agents/issue-tracker.md)
-- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。v0.2.0 集成[隐藏与显示](https://github.com/Capsule7446/window-scaler/issues/18)和[双栏界面](https://github.com/Capsule7446/window-scaler/issues/21)。
+- [分支与发布流程](docs/branching.md)：`feature → epic → release → master`；`hotfix`负责修复。v0.3.0 集成[独立窗口排列](https://github.com/Capsule7446/window-scaler/issues/26)，保留既有隐藏/显示和双栏界面。
 
 `release/vX.Y.Z`会自动测试打包，合入master后由GitHub Actions自动打tag并发布ZIP、EXE和校验文件；正式包见 [GitHub Releases](https://github.com/Capsule7446/window-scaler/releases)。
 
-当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。v0.2.0 正式发布由[版本验收 #24](https://github.com/Capsule7446/window-scaler/issues/24)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
+当前测试证据与剩余环境限制见[验证记录](docs/validation.md)。v0.3.0 正式发布由[版本验收 #29](https://github.com/Capsule7446/window-scaler/issues/29)跟踪。编译产物、日志及本地设置由 `.gitignore` 排除，`Cargo.lock` 随源码提交。
