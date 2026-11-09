@@ -212,6 +212,48 @@ fn tiling_fixture(backend: &Backend, width: i32, height: i32) -> (Fixture, Windo
 }
 
 #[test]
+fn tiling_keeps_hidden_records_when_a_self_shown_special_state_is_skipped() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_fixture, id) = tiling_fixture(&backend, 240, 160);
+    let original = window_frame(hwnd(id)).unwrap();
+    for state in [SW_MAXIMIZE, SW_SHOWMINNOACTIVE] {
+        backend.registry.hide(id).unwrap();
+        unsafe {
+            ShowWindow(hwnd(id), state);
+        }
+        backend.tile(
+            vec![id],
+            Rect {
+                left: 80,
+                top: 80,
+                right: 680,
+                bottom: 580,
+            },
+            TilingOptions {
+                corner: Corner::TopLeft,
+                direction: Direction::Horizontal,
+                gap: 8,
+            },
+        );
+        let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+            panic!("batch")
+        };
+        assert!(outcomes[0].result.is_err());
+        assert!(
+            backend.registry.needs_show(id),
+            "skipping a special state must not discard its hidden record"
+        );
+        backend.registry.hide(id).unwrap();
+        backend.registry.show(id).unwrap();
+        assert_eq!(window_frame(hwnd(id)).unwrap(), original);
+        assert_eq!(unsafe { IsZoomed(hwnd(id)) | IsIconic(hwnd(id)) }, 0);
+    }
+}
+
+#[test]
 fn tiling_accepts_self_shown_windows_but_keeps_failed_show_recovery_pending() {
     use crate::layout::{Corner, Direction, Rect, TilingOptions};
     let _dpi = DpiGuard::new();

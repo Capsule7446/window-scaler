@@ -228,6 +228,9 @@ impl Registry {
         if self.is_hidden(id) {
             return Err("排列只移动位置；请先显示此窗口".into());
         }
+        if unsafe { IsIconic(hwnd(id)) != 0 || IsZoomed(hwnd(id)) != 0 } {
+            return Err("排列只移动位置；请先将此窗口恢复为普通窗口".into());
+        }
         {
             let mut hidden = self.hidden.lock().unwrap();
             if hidden.get(&id).is_some_and(|saved| saved.restore_started) {
@@ -236,9 +239,6 @@ impl Registry {
             // Like Show, accept a target which has made itself visible. Its
             // obsolete hidden geometry must not be reused by the next Hide.
             hidden.remove(&id);
-        }
-        if unsafe { IsIconic(hwnd(id)) != 0 || IsZoomed(hwnd(id)) != 0 } {
-            return Err("排列只移动位置；请先将此窗口恢复为普通窗口".into());
         }
         let [left, top, right, bottom] = window_frame(hwnd(id))?;
         let frame = Rect {
