@@ -212,6 +212,61 @@ fn tiling_fixture(backend: &Backend, width: i32, height: i32) -> (Fixture, Windo
 }
 
 #[test]
+fn tiling_accepts_self_shown_windows_but_keeps_failed_show_recovery_pending() {
+    use crate::layout::{Corner, Direction, Rect, TilingOptions};
+    let _dpi = DpiGuard::new();
+    let (tx, rx) = async_channel::unbounded();
+    let backend = Backend::new(tx);
+    let (_fixture, id) = tiling_fixture(&backend, 240, 160);
+    backend.registry.hide(id).unwrap();
+    unsafe {
+        ShowWindow(hwnd(id), SW_SHOWNOACTIVATE);
+    }
+    let area = Rect {
+        left: 80,
+        top: 80,
+        right: 680,
+        bottom: 580,
+    };
+    let options = TilingOptions {
+        corner: Corner::TopLeft,
+        direction: Direction::Horizontal,
+        gap: 8,
+    };
+    backend.tile(vec![id], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.is_ok(), "{outcomes:?}");
+    assert_eq!(window_frame(hwnd(id)).unwrap(), [80, 80, 320, 240]);
+    backend.registry.hide(id).unwrap();
+    backend.registry.show(id).unwrap();
+    assert_eq!(
+        window_frame(hwnd(id)).unwrap(),
+        [80, 80, 320, 240],
+        "new hide must not reuse an obsolete frame"
+    );
+    backend.registry.hide(id).unwrap();
+    unsafe {
+        SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, REJECT_SHOW_GEOMETRY);
+    }
+    assert!(backend.registry.show(id).is_err());
+    assert_ne!(unsafe { IsWindowVisible(hwnd(id)) }, 0);
+    let pending_frame = window_frame(hwnd(id)).unwrap();
+    backend.tile(vec![id], area, options);
+    let Event::Batch { outcomes, .. } = rx.recv_blocking().unwrap() else {
+        panic!("batch")
+    };
+    assert!(outcomes[0].result.as_ref().unwrap_err().contains("显示"));
+    assert_eq!(window_frame(hwnd(id)).unwrap(), pending_frame);
+    assert!(backend.registry.needs_show(id));
+    unsafe {
+        SetWindowLongPtrW(hwnd(id), GWLP_USERDATA, 0);
+    }
+    backend.registry.show(id).unwrap();
+}
+
+#[test]
 fn tiling_reports_stale_geometry_and_refused_moves_without_stopping_other_targets() {
     use crate::layout::{Corner, Direction, Position, Rect, TilingOptions};
     let _dpi = DpiGuard::new();

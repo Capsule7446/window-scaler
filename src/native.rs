@@ -225,8 +225,17 @@ impl Registry {
     pub fn measure_tiling(&self, id: WindowId) -> Result<TilingSnapshot, String> {
         let _dpi = DpiGuard::new();
         self.require(id)?;
-        if self.needs_show(id) || self.is_hidden(id) {
+        if self.is_hidden(id) {
             return Err("排列只移动位置；请先显示此窗口".into());
+        }
+        {
+            let mut hidden = self.hidden.lock().unwrap();
+            if hidden.get(&id).is_some_and(|saved| saved.restore_started) {
+                return Err("此前显示恢复尚未完成；请先重试显示此窗口".into());
+            }
+            // Like Show, accept a target which has made itself visible. Its
+            // obsolete hidden geometry must not be reused by the next Hide.
+            hidden.remove(&id);
         }
         if unsafe { IsIconic(hwnd(id)) != 0 || IsZoomed(hwnd(id)) != 0 } {
             return Err("排列只移动位置；请先将此窗口恢复为普通窗口".into());
