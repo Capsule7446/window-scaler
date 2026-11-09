@@ -1,3 +1,4 @@
+use crate::layout::{Position, Rect};
 use crate::model::{Size, WindowId, WindowInfo, scaled_size};
 use std::{
     collections::{HashMap, HashSet},
@@ -57,6 +58,12 @@ pub struct Registry {
     registered: std::sync::Mutex<HashSet<WindowId>>,
     verified_maxima: std::sync::Mutex<HashMap<WindowId, WindowGeometry>>,
     hidden: std::sync::Mutex<HashMap<WindowId, HiddenWindow>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TilingSnapshot {
+    pub frame: Rect,
+    pub client: Size,
 }
 
 impl Registry {
@@ -213,6 +220,74 @@ impl Registry {
 
     pub fn needs_show(&self, id: WindowId) -> bool {
         self.hidden.lock().unwrap().contains_key(&id)
+    }
+
+    pub fn measure_tiling(&self, id: WindowId) -> Result<TilingSnapshot, String> {
+        let _dpi = DpiGuard::new();
+        self.require(id)?;
+        if self.needs_show(id) || self.is_hidden(id) {
+            return Err("排列只移动位置；请先显示此窗口".into());
+        }
+        if unsafe { IsIconic(hwnd(id)) != 0 || IsZoomed(hwnd(id)) != 0 } {
+            return Err("排列只移动位置；请先将此窗口恢复为普通窗口".into());
+        }
+        let [left, top, right, bottom] = window_frame(hwnd(id))?;
+        let frame = Rect {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        frame.size()?;
+        Ok(TilingSnapshot {
+            frame,
+            client: client_size(hwnd(id))?,
+        })
+    }
+
+    pub fn move_tiled(
+        &self,
+        id: WindowId,
+        expected: TilingSnapshot,
+        target: Position,
+    ) -> Result<Size, String> {
+        let _dpi = DpiGuard::new();
+        if self.measure_tiling(id)? != expected {
+            return Err("窗口位置或大小已改变，未移动；请重新排列".into());
+        }
+        let size = expected.frame.size()?;
+        let right = target.x.checked_add(size.width).ok_or("排列位置超出范围")?;
+        let bottom = target
+            .y
+            .checked_add(size.height)
+            .ok_or("排列位置超出范围")?;
+        self.require(id)?;
+        if unsafe {
+            SetWindowPos(
+                hwnd(id),
+                null_mut(),
+                target.x,
+                target.y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+            )
+        } == 0
+        {
+            return Err(error("目标未接受排列"));
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        let actual = self.measure_tiling(id)?;
+        let wanted = Rect {
+            left: target.x,
+            top: target.y,
+            right,
+            bottom,
+        };
+        if actual.frame != wanted || actual.client != expected.client {
+            return Err("目标未保持排列位置或原大小，请检查窗口后重试".into());
+        }
+        Ok(actual.client)
     }
 
     pub fn is_hidden(&self, id: WindowId) -> bool {
@@ -533,6 +608,24 @@ fn window_frame(window: HWND) -> Result<[i32; 4], String> {
         return Err(error("无法读取窗口边框"));
     }
     Ok([frame.left, frame.top, frame.right, frame.bottom])
+}
+
+pub fn work_area(reference: usize) -> Result<Rect, String> {
+    let _dpi = DpiGuard::new();
+    let monitor = unsafe { MonitorFromWindow(reference as HWND, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return Err(error("无法读取显示器工作区"));
+    }
+    Ok(Rect {
+        left: info.rcWork.left,
+        top: info.rcWork.top,
+        right: info.rcWork.right,
+        bottom: info.rcWork.bottom,
+    })
 }
 
 fn window_geometry(window: HWND) -> Result<WindowGeometry, String> {

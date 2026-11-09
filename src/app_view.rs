@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::base::{Checkbox as SelectionCheckbox, CheckboxState};
-use gpui_kit::component::{Icon, IconName, Sizable, Theme, ThemeMode, tooltip::Tooltip};
+use gpui_kit::component::{
+    Icon, IconName, Selectable, Sizable, Theme, ThemeMode, tooltip::Tooltip,
+};
 
 pub(super) fn configure_theme(cx: &mut App) {
     Theme::change(ThemeMode::Light, None, cx);
@@ -357,7 +359,6 @@ impl Scaler {
         let outside = hidden_selected(&self.windows, &self.selected, &query);
         let blocked = self.controls_blocked();
         let disabled = blocked || self.selected.is_empty();
-        let width_valid = valid_width(&self.width.read(cx).value()).is_some();
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         let selected: Vec<_> = self
@@ -385,21 +386,17 @@ impl Scaler {
                 .when(outside > 0, |panel| panel.child(div().p_2().rounded_md()
                     .bg(rgb(0xfff7e8)).text_color(rgb(0x8a5b1d)).text_xs()
                     .child(format!("{outside} 个已选窗口不在当前列表，仍参与本次操作。"))))
-                .child(div().border_t_1().border_color(border).pt_3().flex().flex_col().gap_3()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("窗口大小"))
-                    .child(div().flex().items_center().justify_between().gap_2()
-                        .child(div().text_xs().text_color(muted).child("目标宽度"))
-                        .child(div().w(px(116.)).child(Input::new(&self.width).suffix("px").disabled(blocked))))
-                    .child(div().text_xs().text_color(muted).child("内容区像素 · 保持原比例"))
-                    .when(!width_valid, |panel| panel.child(div().text_xs().text_color(rgb(0xb42318)).child("请输入有效的正整数宽度。")))
-                    .child(div().flex().gap_2()
-                        .child(Button::new("shrink").primary().flex_1().label("缩小").icon(IconName::Minimize)
-                            .disabled(disabled || !width_valid)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(width) = valid_width(&this.width.read(cx).value()) { this.begin(Action::Shrink(width), false, cx); }
-                            })))
-                        .child(Button::new("maximize").flex_1().label("放大").icon(IconName::Maximize)
-                            .disabled(disabled).on_click(cx.listener(|this, _, _, cx| this.begin(Action::Maximize, false, cx))))))
+                .child(div().border_t_1().border_color(border).pt_3().flex().gap_1()
+                    .child(Button::new("scaling-panel").small().flex_1().label("缩放/恢复")
+                        .selected(self.panel == OperationPanel::Scaling).disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| { this.panel = OperationPanel::Scaling; cx.notify(); })))
+                    .child(Button::new("tiling-panel").small().flex_1().label("窗口排列")
+                        .selected(self.panel == OperationPanel::Tiling).disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| { this.panel = OperationPanel::Tiling; cx.notify(); }))))
+                .child(match self.panel {
+                    OperationPanel::Scaling => self.render_scaling(cx).into_any_element(),
+                    OperationPanel::Tiling => self.render_tiling(cx).into_any_element(),
+                })
                 .child(div().border_t_1().border_color(border).pt_3().flex().flex_col().gap_3()
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("窗口可见性"))
                     .child(div().flex().gap_2()
@@ -411,6 +408,186 @@ impl Scaler {
                 .child(div().text_xs().text_color(rgb(0x405b88)).child(
                     if self.busy { "正在处理，请稍候…" } else { "操作对全部已选窗口生效" }
                 )))
+    }
+
+    fn render_scaling(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let blocked = self.controls_blocked();
+        let disabled = blocked || self.selected.is_empty();
+        let width_valid = valid_width(&self.width.read(cx).value()).is_some();
+        let muted = cx.theme().muted_foreground;
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("窗口大小"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().text_xs().text_color(muted).child("目标宽度"))
+                    .child(
+                        div()
+                            .w(px(116.))
+                            .child(Input::new(&self.width).suffix("px").disabled(blocked)),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("内容区像素 · 保持原比例"),
+            )
+            .when(!width_valid, |panel| {
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xb42318))
+                        .child("请输入有效的正整数宽度。"),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("shrink")
+                            .primary()
+                            .flex_1()
+                            .label("缩小")
+                            .icon(IconName::Minimize)
+                            .disabled(disabled || !width_valid)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(width) = valid_width(&this.width.read(cx).value()) {
+                                    this.begin(Action::Shrink(width), false, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("maximize")
+                            .flex_1()
+                            .label("放大")
+                            .icon(IconName::Maximize)
+                            .disabled(disabled)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.begin(Action::Maximize, false, cx)
+                            })),
+                    ),
+            )
+    }
+
+    fn render_tiling(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let blocked = self.controls_blocked();
+        let disabled = blocked || self.selected.is_empty();
+        let gap_valid = valid_gap(&self.gap.read(cx).value()).is_some();
+        let muted = cx.theme().muted_foreground;
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("排列起点"),
+            )
+            .children(
+                [
+                    [
+                        ("top-left", "↖ 左上", Corner::TopLeft),
+                        ("top-right", "右上 ↗", Corner::TopRight),
+                    ],
+                    [
+                        ("bottom-left", "↙ 左下", Corner::BottomLeft),
+                        ("bottom-right", "右下 ↘", Corner::BottomRight),
+                    ],
+                ]
+                .into_iter()
+                .map(|row| {
+                    div()
+                        .flex()
+                        .gap_2()
+                        .children(row.into_iter().map(|(id, label, corner)| {
+                            Button::new(id)
+                                .small()
+                                .flex_1()
+                                .label(label)
+                                .selected(self.corner == corner)
+                                .disabled(blocked)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.corner = corner;
+                                    cx.notify();
+                                }))
+                        }))
+                }),
+            )
+            .child(
+                div().flex().gap_2().children(
+                    [
+                        ("horizontal", "水平平铺", Direction::Horizontal),
+                        ("vertical", "垂直平铺", Direction::Vertical),
+                    ]
+                    .into_iter()
+                    .map(|(id, label, direction)| {
+                        Button::new(id)
+                            .small()
+                            .flex_1()
+                            .label(label)
+                            .selected(self.direction == direction)
+                            .disabled(blocked)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.direction = direction;
+                                cx.notify();
+                            }))
+                    }),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().text_xs().text_color(muted).child("窗口间隔"))
+                    .child(
+                        div()
+                            .w(px(116.))
+                            .child(Input::new(&self.gap).suffix("px").disabled(blocked)),
+                    ),
+            )
+            .when(!gap_valid, |panel| {
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xb42318))
+                        .child("请输入 0 至 2147483647 的整数。"),
+                )
+            })
+            .child(
+                Button::new("tile-windows")
+                    .primary()
+                    .w_full()
+                    .label("一键平铺")
+                    .disabled(disabled || !gap_valid)
+                    .on_click(cx.listener(|this, _, _, cx| this.begin_tiling(cx))),
+            )
+            .child(
+                div().text_xs().text_color(muted).child(
+                    "只移动，保持当前大小。在本工具所在屏幕排列，放不下一行/列时自动换行/列。",
+                ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("隐藏、最小化或最大化窗口需先手动显示或恢复为普通窗口。"),
+            )
     }
 
     fn render_exit_failure(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
